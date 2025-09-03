@@ -9,6 +9,7 @@ export type VideoSection = {
   clip_url?: string;
   start_time?: number;
   end_time?: number;
+  clip_error?: string;
 };
 
 export type CaptionSegment = { start: number; end: number; text: string };

@@ -145,6 +145,48 @@ export type Database = {
         }
         Relationships: []
       }
+      video_jobs: {
+        Row: {
+          captions: Json | null
+          created_at: string
+          error: string | null
+          id: string
+          idea: string
+          sections: Json
+          status: string
+          updated_at: string
+          user_id: string | null
+          video_url: string | null
+          voiceover_url: string | null
+        }
+        Insert: {
+          captions?: Json | null
+          created_at?: string
+          error?: string | null
+          id: string
+          idea: string
+          sections?: Json
+          status: string
+          updated_at?: string
+          user_id?: string | null
+          video_url?: string | null
+          voiceover_url?: string | null
+        }
+        Update: {
+          captions?: Json | null
+          created_at?: string
+          error?: string | null
+          id?: string
+          idea?: string
+          sections?: Json
+          status?: string
+          updated_at?: string
+          user_id?: string | null
+          video_url?: string | null
+          voiceover_url?: string | null
+        }
+        Relationships: []
+      }
       webhook_events: {
         Row: {
           created_at: string

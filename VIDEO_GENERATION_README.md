@@ -20,6 +20,11 @@ Run the migration to create the videos table:
 npx supabase migration up
 ```
 
+If you added a new environment after cloning, regenerate types (optional):
+```bash
+npx supabase gen types typescript --project-id "$SUPABASE_PROJECT_ID" --schema public > src/types/supabase.ts
+```
+
 ### 2. Configure AI Services
 
 #### OpenAI (Required for Script Generation)
@@ -247,3 +252,54 @@ Track these metrics:
 
 ## License
 This implementation is part of the Reelify platform. All rights reserved.
+
+---
+
+## Environment Variables Reference
+
+Add these to `.env.local` (server variables without NEXT_PUBLIC_ are not exposed to client):
+
+```
+OPENAI_API_KEY=sk-...
+OPENAI_MODEL=gpt-4o-mini
+REPLICATE_API_TOKEN=...
+REPLICATE_VIDEO_MODEL_VERSION=stability-ai/stable-video-diffusion
+ELEVENLABS_API_KEY=...
+VIDEO_PROCESSOR_URL=https://api.shotstack.io/stage (or your worker URL)
+VIDEO_PROCESSOR_API_KEY=shotstack_key_or_worker_secret
+STRIPE_SECRET_KEY=...
+STRIPE_WEBHOOK_SECRET=whsec_...
+SUPABASE_URL=...
+SUPABASE_ANON_KEY=...
+SUPABASE_SERVICE_KEY=...
+NEXT_PUBLIC_SUPABASE_URL=...
+NEXT_PUBLIC_SUPABASE_ANON_KEY=...
+```
+
+Optional:
+```
+LOG_LEVEL=debug
+```
+
+## Current Pipeline Implementation Status
+
+Stage | Status | Notes
+----- | ------ | -----
+Planning | Implemented | Uses OpenAI JSON mode
+Scripting | Implemented | Section mapping ensures order
+Prompting | Implemented | Generates per-section shot prompts
+Clip Generation | Placeholder | Replace with real calls (Replicate / Pika / Runway). See `generateClips()` TODO.
+Voiceover | Placeholder | Uses placeholder URL; switch to `generateVoiceover` in `ai-services`.
+Captions | Basic | Word-splitting heuristic; replace with Whisper output integrated earlier.
+Stitching | Placeholder | Replace with Shotstack or FFmpeg assembly.
+
+To upgrade placeholders progressively:
+1. Import functions from `@/lib/ai-services` into `orchestrator.ts`.
+2. Replace each placeholder call with real implementation (respecting rate limits).
+3. Persist intermediate URLs in `video_jobs` to allow resumable pipeline.
+
+## Shotstack Integration Sketch
+
+Use Shotstack to assemble final video (stitch stage) by POSTing timeline JSON with tracks containing clip asset URLs and optional audio track, then poll render endpoint until status is `done`.
+
+---

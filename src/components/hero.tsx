@@ -33,7 +33,7 @@ export default function Hero() {
 
             <div className="flex flex-col sm:flex-row gap-4 justify-center items-center mb-16">
               <Link
-                href="/dashboard"
+                href="/dashboard/create"
                 className="inline-flex items-center px-8 py-4 text-white bg-gradient-to-r from-purple-600 to-pink-600 rounded-lg hover:from-purple-700 hover:to-pink-700 transition-all text-lg font-medium shadow-lg hover:shadow-xl transform hover:scale-105"
               >
                 Create Your First Video

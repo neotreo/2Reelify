@@ -2,17 +2,32 @@ import { randomUUID } from 'crypto';
 import OpenAI from 'openai';
 import { VideoJob, VideoSection } from '@/types/video';
 import { insertJob, updateJob, getJob } from './store';
+import { generateVoiceover as ttsGenerateVoiceover, generateCaptions as whisperGenerateCaptions, generateVideoClip, processAndCombineVideos } from '@/lib/ai-services';
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 async function structuredJSON<T>(prompt: string, schemaName: string, schema: any): Promise<T> {
-  const res = await openai.responses.create({
-    model: 'gpt-4.1-mini',
-    input: prompt,
-    response_format: { type: 'json_schema', json_schema: { name: schemaName, schema } }
+  const schemaText = JSON.stringify(schema, null, 2);
+  const res = await openai.chat.completions.create({
+    model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+    messages: [
+      {
+        role: 'system',
+        content: `You ONLY output valid JSON. It MUST satisfy this JSON Schema named ${schemaName}:\n${schemaText}`
+      },
+      { role: 'user', content: prompt }
+    ],
+    response_format: { type: 'json_object' },
+    temperature: 0.7,
+    max_tokens: 1800
   });
-  const text = (res as any).output[0].content[0].text as string;
-  return JSON.parse(text) as T;
+  const text = res.choices?.[0]?.message?.content;
+  if (!text) throw new Error('Empty OpenAI JSON response');
+  try {
+    return JSON.parse(text) as T;
+  } catch (err) {
+    throw new Error(`Model returned invalid JSON: ${text}`);
+  }
 }
 
 export async function createVideoJob(idea: string, userId?: string | null): Promise<VideoJob> {
@@ -26,7 +41,20 @@ export async function createVideoJob(idea: string, userId?: string | null): Prom
     updated_at: new Date().toISOString()
   };
   await insertJob(job);
-  queueMicrotask(() => runPipeline(job.id).catch(err => console.error('Pipeline error', err)));
+  
+  // Use setTimeout instead of queueMicrotask for better error handling
+  setTimeout(async () => {
+    try {
+      await runPipeline(job.id);
+    } catch (err) {
+      console.error('Pipeline error:', err);
+      await updateJob(job.id, { 
+        status: 'error', 
+        error: err instanceof Error ? err.message : 'Unknown error' 
+      });
+    }
+  }, 100);
+  
   return job;
 }
 
@@ -42,14 +70,39 @@ async function runPipeline(jobId: string) {
     job = await stitch(job);
     await updateJob(job.id, { status: 'complete' });
   } catch (e: any) {
-    await updateJob(job.id, { status: 'error', error: e?.message || 'unknown error' });
+    console.error('Pipeline error:', e);
+    await updateJob(job.id, { 
+      status: 'error', 
+      error: e?.message || 'Pipeline failed' 
+    });
+    throw e;
   }
 }
 
 async function plan(job: VideoJob): Promise<VideoJob> {
   await updateJob(job.id, { status: 'planning' });
+  
+  const prompt = `Plan a high-retention vertical short video (TikTok/Reel) based on this idea: "${job.idea}".
+  
+  Requirements:
+  - Total duration: 35-55 seconds
+  - Create 5-8 sections
+  - Each section should be 4-10 seconds
+  - Focus on viral hooks and retention
+  
+  Return a JSON object with this structure:
+  {
+    "sections": [
+      {
+        "title": "Hook/Introduction/etc",
+        "objective": "What this section achieves",
+        "targetSeconds": 5
+      }
+    ]
+  }`;
+  
   const data = await structuredJSON<{ sections: { title: string; objective: string; targetSeconds: number }[] }>(
-    `Plan a high retention vertical short (TikTok/Reel) based on the idea: "${job.idea}".\nConstraints:\n- 35-55s total\n- 5-8 sections\n- Each targetSeconds 4-10\nReturn JSON only.`,
+    prompt,
     'video_plan',
     {
       type: 'object',
@@ -72,20 +125,49 @@ async function plan(job: VideoJob): Promise<VideoJob> {
       required: ['sections']
     }
   );
+  
   const sections: VideoSection[] = data.sections.map(s => ({
     id: randomUUID(),
     title: s.title,
     objective: s.objective,
     target_seconds: s.targetSeconds
   }));
+  
   return await updateJob(job.id, { sections });
 }
 
 async function script(job: VideoJob): Promise<VideoJob> {
   await updateJob(job.id, { status: 'scripting' });
-  const sectionDesc = job.sections.map((s,i) => `${i+1}. ${s.title} (objective: ${s.objective}, target: ${s.target_seconds}s)`).join('\n');
+  
+  const sectionDesc = job.sections.map((s, i) => 
+    `Section ${i+1}: ${s.title} (${s.objective}) - ${s.target_seconds} seconds`
+  ).join('\n');
+  
+  const prompt = `Write an engaging spoken script for a viral short video about "${job.idea}".
+  
+  Sections to write for:
+  ${sectionDesc}
+  
+  Requirements:
+  - Natural, conversational tone
+  - High energy and engaging
+  - No camera directions, just spoken words
+  - Each section's script should fit its time allocation
+  
+  Return JSON with this structure:
+  {
+    "sections": [
+      {
+        "id": "section_id_here",
+        "script": "The actual spoken words for this section"
+      }
+    ]
+  }
+  
+  Use these section IDs: ${job.sections.map(s => s.id).join(', ')}`;
+  
   const data = await structuredJSON<{ sections: { id: string; script: string }[] }>(
-    `Write an engaging spoken script for each section below. Avoid camera directions. Keep wording natural & energetic.\nReturn JSON with sections array (id, script).\nSections:\n${sectionDesc}\n`,
+    prompt,
     'video_script',
     {
       type: 'object',
@@ -105,16 +187,52 @@ async function script(job: VideoJob): Promise<VideoJob> {
       required: ['sections']
     }
   );
-  const map = new Map(data.sections.map(s => [s.id, s.script]));
-  const updatedSections = job.sections.map(s => ({ ...s, script: map.get(s.id) || s.objective }));
+  
+  const scriptMap = new Map(job.sections.map(s => [s.id, '']));
+  data.sections.forEach(s => {
+    if (scriptMap.has(s.id)) {
+      scriptMap.set(s.id, s.script);
+    }
+  });
+  
+  const updatedSections = job.sections.map(s => ({
+    ...s,
+    script: scriptMap.get(s.id) || s.objective
+  }));
+  
   return await updateJob(job.id, { sections: updatedSections });
 }
 
 async function prompts(job: VideoJob): Promise<VideoJob> {
   await updateJob(job.id, { status: 'prompting' });
-  const scripts = job.sections.map(s => ({ id: s.id, script: s.script })).slice(0, job.sections.length);
+  
+  const scriptsDesc = job.sections.map(s => 
+    `ID: ${s.id}\nScript: "${s.script}"`
+  ).join('\n\n');
+  
+  const prompt = `Create visual generation prompts for AI video creation based on these script sections:
+  
+  ${scriptsDesc}
+  
+  Requirements:
+  - Cinematic, vertical 9:16 format descriptions
+  - No text overlays or watermarks in prompts
+  - Focus on visuals that match the narration
+  - Maximum 200 characters per prompt
+  - Be specific about camera angles, subjects, and mood
+  
+  Return JSON:
+  {
+    "prompts": [
+      {
+        "id": "section_id",
+        "shotPrompt": "Detailed visual description here"
+      }
+    ]
+  }`;
+  
   const data = await structuredJSON<{ prompts: { id: string; shotPrompt: string }[] }>(
-    `Create a concise visual generation prompt for each script line for an AI video model. Focus on cinematic, vertical 9:16 visuals, no text overlays, no watermarks. Max 200 chars each.\nReturn JSON with prompts array (id, shotPrompt).`,
+    prompt,
     'video_prompts',
     {
       type: 'object',
@@ -134,48 +252,90 @@ async function prompts(job: VideoJob): Promise<VideoJob> {
       required: ['prompts']
     }
   );
-  const map = new Map(data.prompts.map(p => [p.id, p.shotPrompt]));
-  const updatedSections = job.sections.map(s => ({ ...s, shot_prompt: map.get(s.id) || s.objective }));
+  
+  const promptMap = new Map(data.prompts.map(p => [p.id, p.shotPrompt]));
+  const updatedSections = job.sections.map(s => ({
+    ...s,
+    shot_prompt: promptMap.get(s.id) || 'Cinematic shot related to: ' + s.objective
+  }));
+  
   return await updateJob(job.id, { sections: updatedSections });
 }
 
+// Generate clips per section using AI video model (Replicate / etc.)
 async function generateClips(job: VideoJob): Promise<VideoJob> {
   await updateJob(job.id, { status: 'generating_clips' });
-  // Placeholder: real API integration needed. Simulate URLs.
-  const updatedSections = job.sections.map(s => ({
-    ...s,
-    clip_id: randomUUID(),
-    clip_url: `https://example.invalid/clips/${s.id}.mp4`
-  }));
-  return await updateJob(job.id, { sections: updatedSections });
+
+  const sections = [...job.sections];
+
+  for (let i = 0; i < sections.length; i++) {
+    const section = sections[i];
+    // Skip if already has clip (idempotency / resume support)
+    if (section.clip_url) continue;
+    try {
+      const duration = Math.min(Math.max(section.target_seconds || 5, 2), 12);
+      const prompt = section.shot_prompt || `Cinematic vertical video illustrating: ${section.objective}`;
+      const clipUrl = await generateVideoClip({
+        prompt,
+        duration,
+        style: 'cinematic',
+        aspectRatio: '9:16'
+      });
+      section.clip_id = randomUUID();
+      section.clip_url = clipUrl;
+  delete (section as any).clip_error;
+    } catch (err) {
+      console.error('Clip generation failed for section', section.id, err);
+      // Leave clip_url undefined; pipeline can still proceed (or fail later in stitch)
+  section.clip_error = err instanceof Error ? err.message : 'clip_failed';
+    }
+    // Persist progress after each section to allow UI polling
+    await updateJob(job.id, { sections });
+  }
+
+  return await getJob(job.id);
 }
 
 async function generateVoiceover(job: VideoJob): Promise<VideoJob> {
   await updateJob(job.id, { status: 'voiceover' });
-  // Placeholder: integrate TTS provider. Save to storage and set voiceover_url.
-  const full = job.sections.map(s => s.script).join(' ');
-  // Not actually generating: stub URL
-  return await updateJob(job.id, { voiceover_url: `https://example.invalid/voice/${job.id}.mp3` });
+  const fullScript = job.sections.map(s => s.script).join(' ').trim();
+  if (!fullScript) throw new Error('Empty script cannot generate voiceover');
+
+  // Choose a default voice if not specified; could extend job schema later
+  const defaultVoice = 'professional';
+  const voiceoverUrl = await ttsGenerateVoiceover({
+    text: fullScript,
+    voice: defaultVoice,
+    speed: 1.0
+  });
+  return await updateJob(job.id, { voiceover_url: voiceoverUrl });
 }
 
 async function generateCaptions(job: VideoJob): Promise<VideoJob> {
   await updateJob(job.id, { status: 'captions' });
-  let cursor = 0;
-  const captions = job.sections.flatMap(section => {
-    const words = (section.script || '').split(/\s+/).filter(Boolean);
-    const perWord = (section.target_seconds || 5) / Math.max(words.length,1);
-    return words.map((w, i) => {
-      const start = cursor + i * perWord;
-      const end = start + perWord;
-      if (i === words.length - 1) cursor = end; // advance after last
-      return { start, end, text: w };
-    });
-  });
-  return await updateJob(job.id, { captions });
+  if (!job.voiceover_url) throw new Error('Voiceover must be generated before captions');
+  const captionSegments = await whisperGenerateCaptions(job.voiceover_url);
+  // Basic sanity filter
+  const filtered = captionSegments.filter(c => typeof c.start === 'number' && typeof c.end === 'number' && c.text);
+  return await updateJob(job.id, { captions: filtered });
 }
 
 async function stitch(job: VideoJob): Promise<VideoJob> {
   await updateJob(job.id, { status: 'stitching' });
-  // Actual stitching with ffmpeg should happen in a worker environment where ffmpeg is available.
-  return await updateJob(job.id, { video_url: `https://example.invalid/videos/${job.id}.mp4` });
+
+  const clipUrls = job.sections.map(s => s.clip_url).filter(Boolean) as string[];
+  if (!clipUrls.length) throw new Error('No clips generated to stitch');
+
+  try {
+    const finalUrl = await processAndCombineVideos({
+      videoClips: clipUrls,
+      audioUrl: job.voiceover_url || undefined,
+      captions: job.captions || undefined,
+      durations: job.sections.map(s => s.target_seconds || 5)
+    });
+    return await updateJob(job.id, { video_url: finalUrl });
+  } catch (err) {
+    console.error('Stitching failed', err);
+    throw err;
+  }
 }

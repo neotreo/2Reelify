@@ -2,6 +2,16 @@
 
 import { createClient } from "../../../supabase/server";
 import { redirect } from "next/navigation";
+import {
+  generateScriptWithAI,
+  generateVideoClip,
+  generateVoiceover as ttsVoiceover,
+  generateCaptions as whisperCaptions,
+  VIDEO_STYLES,
+} from "@/lib/ai-services";
+import { createVideoJob } from "@/lib/video/orchestrator";
+import { getJob } from "@/lib/video/store";
+import type { VideoJob } from "@/types/video";
 
 // AI Provider interfaces (you'll need to implement these with actual APIs)
 interface ScriptScene {
@@ -18,42 +28,129 @@ interface VideoGenerationResponse {
   error?: string;
 }
 
-// Main video generation action
-export async function generateVideoAction(formData: FormData): Promise<VideoGenerationResponse> {
+// Start background video job via orchestrator and return job id immediately
+export async function startVideoJobAction(
+  formData: FormData,
+): Promise<{ jobId?: string; error?: string }> {
   const supabase = await createClient();
-  
+
+  const {
+    data: { user },
+    error: authError,
+  } = await supabase.auth.getUser();
+  if (authError || !user) {
+    return { error: "Please sign in to create videos" };
+  }
+
+  try {
+    const idea = (formData.get("idea") as string)?.trim();
+    if (!idea) return { error: "Please describe your video idea" };
+
+    // Kick off background pipeline
+    const job = await createVideoJob(idea, user.id);
+    return { jobId: job.id };
+  } catch (e: any) {
+    const msg = e?.message || (typeof e === "string" ? e : JSON.stringify(e));
+    console.error("Failed to start video job:", e);
+    return { error: `Failed to start video generation: ${msg}` };
+  }
+}
+
+// Fetch current job status and data for polling in the client
+export async function getVideoJobAction(
+  jobId: string,
+): Promise<{ job?: VideoJob; error?: string }> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return { error: "Not authenticated" };
+
+  try {
+    const job = await getJob(jobId);
+    if (job.user_id && job.user_id !== user.id) return { error: "Forbidden" };
+    return { job };
+  } catch (e) {
+    console.error("getVideoJobAction error:", e);
+    return { error: "Unable to load job" };
+  }
+}
+
+// Main video generation action (legacy synchronous flow - unused in new create screen)
+export async function generateVideoAction(
+  formData: FormData,
+): Promise<VideoGenerationResponse> {
+  const supabase = await createClient();
+
   // Check authentication
-  const { data: { user }, error: authError } = await supabase.auth.getUser();
+  const {
+    data: { user },
+    error: authError,
+  } = await supabase.auth.getUser();
   if (authError || !user) {
     return { error: "Please sign in to create videos" };
   }
 
   // Check subscription status
   const { data: subscription } = await supabase
-    .from('subscriptions')
-    .select('*')
-    .eq('user_id', user.id)
-    .eq('status', 'active')
-    .single();
+    .from("subscriptions")
+    .select("*")
+    .eq("user_id", user.id)
+    .eq("status", "active")
+    .maybeSingle();
 
+  // Allow exactly 1 free video if no active subscription
   if (!subscription) {
-    return { error: "Active subscription required. Please upgrade your plan." };
+    const { count, error: countError } = await supabase
+      .from("videos")
+      .select("id", { count: "exact", head: true })
+      .eq("user_id", user.id);
+
+    if (countError) {
+      return {
+        error: "Unable to verify free video eligibility. Please try again.",
+      };
+    }
+
+    if ((count ?? 0) >= 1) {
+      return {
+        error:
+          "Free video used. Please upgrade your plan to continue creating videos.",
+      };
+    }
   }
 
   try {
     // Extract form data
-    const idea = formData.get('idea') as string;
-    const style = formData.get('style') as string;
-    const duration = parseInt(formData.get('duration') as string);
-    const voiceType = formData.get('voiceType') as string;
-    const musicType = formData.get('musicType') as string;
-    const includeVoiceover = formData.get('includeVoiceover') === 'true';
-    const includeCaptions = formData.get('includeCaptions') === 'true';
-    const includeMusic = formData.get('includeMusic') === 'true';
+    const idea = formData.get("idea") as string;
+    const style = formData.get("style") as string;
+    const requestedDuration = parseInt(
+      (formData.get("duration") as string) || "30",
+      10,
+    );
+    const voiceType = formData.get("voiceType") as string;
+    const musicType = formData.get("musicType") as string;
+    const includeVoiceover = formData.get("includeVoiceover") === "true";
+    const includeCaptions = formData.get("includeCaptions") === "true";
+    const includeMusic = formData.get("includeMusic") === "true";
+
+    const isTrial = !subscription;
+    const duration = isTrial
+      ? Math.min(
+          Number.isFinite(requestedDuration) ? requestedDuration : 30,
+          30,
+        )
+      : Number.isFinite(requestedDuration)
+        ? requestedDuration
+        : 30;
 
     // Step 1: Generate script and scene planning
     const scriptData = await generateScript(idea, duration, style);
-    if (!scriptData.script || !scriptData.scenes) {
+    if (
+      !scriptData.script ||
+      !scriptData.scenes ||
+      scriptData.scenes.length === 0
+    ) {
       return { error: "Failed to generate script" };
     }
 
@@ -78,7 +175,7 @@ export async function generateVideoAction(formData: FormData): Promise<VideoGene
       musicType: includeMusic ? musicType : undefined,
       includeCaptions,
       style,
-      duration
+      duration,
     });
 
     if (!finalVideoUrl) {
@@ -87,7 +184,7 @@ export async function generateVideoAction(formData: FormData): Promise<VideoGene
 
     // Step 5: Save to database
     const { data: video, error: dbError } = await supabase
-      .from('videos')
+      .from("videos")
       .insert({
         user_id: user.id,
         title: idea.substring(0, 100),
@@ -102,14 +199,19 @@ export async function generateVideoAction(formData: FormData): Promise<VideoGene
         has_voiceover: includeVoiceover,
         has_captions: includeCaptions,
         has_music: includeMusic,
-        status: 'complete',
-        created_at: new Date().toISOString()
+        voiceover_url: voiceoverUrl ?? null,
+        captions:
+          includeCaptions && voiceoverUrl
+            ? await generateCaptions(voiceoverUrl)
+            : null,
+        status: "complete",
+        created_at: new Date().toISOString(),
       })
       .select()
       .single();
 
     if (dbError) {
-      console.error('Database error:', dbError);
+      console.error("Database error:", dbError);
       return { error: "Failed to save video" };
     }
 
@@ -117,88 +219,65 @@ export async function generateVideoAction(formData: FormData): Promise<VideoGene
       script: scriptData.script,
       scenes: scriptData.scenes,
       videoUrl: finalVideoUrl,
-      videoId: video.id
+      videoId: video.id,
     };
-
   } catch (error) {
-    console.error('Video generation error:', error);
+    console.error("Video generation error:", error);
     return { error: "An unexpected error occurred" };
   }
 }
 
 // Generate script and scene breakdown using AI
-async function generateScript(idea: string, duration: number, style: string): Promise<{ script?: string; scenes?: ScriptScene[] }> {
+async function generateScript(
+  idea: string,
+  duration: number,
+  style: string,
+): Promise<{ script?: string; scenes?: ScriptScene[] }> {
   try {
-    // This is where you'd integrate with OpenAI or another LLM
-    // For now, returning mock data
-    
-    // In production, you would:
-    // 1. Call OpenAI API to generate a script based on the idea
-    // 2. Break down the script into scenes
-    // 3. Generate video prompts for each scene
-    
-    const mockScript = `Here's an amazing fact: ${idea}. This will blow your mind! Let me explain why this matters and how it affects your daily life.`;
-    
-    const mockScenes: ScriptScene[] = [
-      {
-        text: "Here's an amazing fact",
-        duration: duration / 3,
-        videoPrompt: `${style} style video showing dramatic opening scene related to ${idea}`
-      },
-      {
-        text: "This will blow your mind",
-        duration: duration / 3,
-        videoPrompt: `${style} style video showing stunning visuals that illustrate ${idea}`
-      },
-      {
-        text: "Let me explain why this matters",
-        duration: duration / 3,
-        videoPrompt: `${style} style video showing conclusion and call to action about ${idea}`
-      }
-    ];
-
-    return { script: mockScript, scenes: mockScenes };
+    const res = await generateScriptWithAI({ idea, duration, style });
+    return res;
   } catch (error) {
-    console.error('Script generation error:', error);
+    console.error("Script generation error:", error);
     return {};
   }
 }
 
 // Generate video clips using AI video generation
-async function generateVideoClips(scenes: ScriptScene[], style: string): Promise<string[]> {
+async function generateVideoClips(
+  scenes: ScriptScene[],
+  style: string,
+): Promise<string[]> {
   try {
-    // This is where you'd integrate with video generation APIs like:
-    // - Runway ML
-    // - Replicate (with video models)
-    // - Stability AI video
-    // - Pika Labs
-    
-    // For now, returning placeholder URLs
-    const mockVideoClips = scenes.map((scene, index) => {
-      // In production, you would generate actual videos here
-      return `https://placeholder-video-${index}.mp4`;
-    });
-
-    return mockVideoClips;
+    const clips = await Promise.all(
+      scenes.map((scene) =>
+        generateVideoClip({
+          prompt:
+            `${VIDEO_STYLES[style as keyof typeof VIDEO_STYLES]?.prompt_prefix || ""}, ${scene.videoPrompt}`.trim(),
+          duration: Math.min(Math.max(scene.duration, 2), 12),
+          style,
+          aspectRatio: "9:16",
+        }),
+      ),
+    );
+    return clips.filter(Boolean);
   } catch (error) {
-    console.error('Video generation error:', error);
+    console.error("Video generation error:", error);
     return [];
   }
 }
 
 // Generate voiceover using text-to-speech
-async function generateVoiceover(script: string, voiceType: string): Promise<string | undefined> {
+async function generateVoiceover(
+  script: string,
+  voiceType: string,
+): Promise<string | undefined> {
   try {
-    // This is where you'd integrate with TTS APIs like:
-    // - ElevenLabs
-    // - OpenAI TTS
-    // - Google Cloud TTS
-    // - Amazon Polly
-    
-    // For now, returning placeholder URL
-    return `https://placeholder-voiceover.mp3`;
+    return await ttsVoiceover({
+      text: script,
+      voice: voiceType || "professional",
+    });
   } catch (error) {
-    console.error('Voiceover generation error:', error);
+    console.error("Voiceover generation error:", error);
     return undefined;
   }
 }
@@ -215,22 +294,10 @@ async function processVideo(params: {
   duration: number;
 }): Promise<string | undefined> {
   try {
-    // This is where you'd:
-    // 1. Combine video clips
-    // 2. Add voiceover track
-    // 3. Add background music
-    // 4. Generate and add captions
-    // 5. Export in 9:16 format
-    
-    // You could use:
-    // - FFmpeg (via a serverless function)
-    // - Remotion for React-based video generation
-    // - Video processing APIs like Shotstack or Bannerbear
-    
-    // For now, returning placeholder URL
-    return `https://placeholder-final-video.mp4`;
+    // For now still placeholder; integrate Shotstack / processing later
+    return params.clips[0] || undefined;
   } catch (error) {
-    console.error('Video processing error:', error);
+    console.error("Video processing error:", error);
     return undefined;
   }
 }
@@ -238,17 +305,19 @@ async function processVideo(params: {
 // Get user's videos
 export async function getUserVideos() {
   const supabase = await createClient();
-  
-  const { data: { user } } = await supabase.auth.getUser();
+
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
   if (!user) {
     return { error: "Not authenticated", videos: [] };
   }
 
   const { data: videos, error } = await supabase
-    .from('videos')
-    .select('*')
-    .eq('user_id', user.id)
-    .order('created_at', { ascending: false });
+    .from("videos")
+    .select("*")
+    .eq("user_id", user.id)
+    .order("created_at", { ascending: false });
 
   if (error) {
     return { error: error.message, videos: [] };
@@ -260,21 +329,33 @@ export async function getUserVideos() {
 // Delete a video
 export async function deleteVideo(videoId: string) {
   const supabase = await createClient();
-  
-  const { data: { user } } = await supabase.auth.getUser();
+
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
   if (!user) {
     return { error: "Not authenticated" };
   }
 
   const { error } = await supabase
-    .from('videos')
+    .from("videos")
     .delete()
-    .eq('id', videoId)
-    .eq('user_id', user.id);
+    .eq("id", videoId)
+    .eq("user_id", user.id);
 
   if (error) {
     return { error: error.message };
   }
 
   return { success: true };
+}
+
+// Helper to generate captions after voiceover (used inline during insert)
+async function generateCaptions(voiceoverUrl: string) {
+  try {
+    return await whisperCaptions(voiceoverUrl);
+  } catch (e) {
+    console.error("Caption generation error:", e);
+    return [];
+  }
 }

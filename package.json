@@ -36,6 +36,7 @@
     "react-dom": "^18",
     "react-hook-form": "^7.54.2",
     "react-resizable-panels": "^2.1.7",
+    "replicate": "^0.31.1",
     "stripe": "^17.6.0",
     "tempo-devtools": "^2.0.94",
     "vaul": "^1.1.2"

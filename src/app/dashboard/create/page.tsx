@@ -1,26 +1,36 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import DashboardNavbar from "@/components/dashboard-navbar";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { 
-  Sparkles, 
-  Video, 
-  Mic, 
-  Type, 
-  Download, 
-  Play, 
-  Pause,
+import {
+  Sparkles,
+  Video,
+  Mic,
+  Type,
+  Download,
   RefreshCw,
   Settings,
   Loader2,
@@ -28,17 +38,27 @@ import {
   AlertCircle,
   Film,
   Music,
-  Volume2,
   Palette,
-  Clock
+  Clock,
 } from "lucide-react";
-import { generateVideoAction } from "@/app/actions/video-actions";
+import {
+  startVideoJobAction,
+  getVideoJobAction,
+} from "@/app/actions/video-actions";
 import VideoPlayer from "@/components/video-player";
 import { useRouter } from "next/navigation";
+import type { VideoJob, VideoJobStatus } from "@/types/video";
 
 interface VideoProject {
   id?: string;
-  status: 'idle' | 'planning' | 'scripting' | 'generating' | 'processing' | 'complete' | 'error';
+  status:
+    | "idle"
+    | "planning"
+    | "scripting"
+    | "generating"
+    | "processing"
+    | "complete"
+    | "error";
   progress: number;
   script?: string;
   scenes?: Array<{
@@ -67,9 +87,14 @@ export default function CreateVideoPage() {
   const [includeCaptions, setIncludeCaptions] = useState(true);
   const [includeMusic, setIncludeMusic] = useState(true);
   const [project, setProject] = useState<VideoProject>({
-    status: 'idle',
-    progress: 0
+    status: "idle",
+    progress: 0,
   });
+
+  // Job state for real-time updates
+  const [jobId, setJobId] = useState<string | null>(null);
+  const [job, setJob] = useState<VideoJob | null>(null);
+  const pollRef = useRef<NodeJS.Timeout | null>(null);
 
   const statusMessages = {
     idle: "Ready to create your video",
@@ -78,77 +103,182 @@ export default function CreateVideoPage() {
     generating: "Creating stunning visuals...",
     processing: "Adding voiceover and captions...",
     complete: "Your video is ready!",
-    error: "Something went wrong"
+    error: "Something went wrong",
+  } as const;
+
+  const jobStatusToProjectStatus: Record<
+    VideoJobStatus,
+    VideoProject["status"]
+  > = {
+    queued: "planning",
+    planning: "planning",
+    scripting: "scripting",
+    prompting: "generating",
+    generating_clips: "generating",
+    voiceover: "processing",
+    captions: "processing",
+    stitching: "processing",
+    complete: "complete",
+    error: "error",
   };
+
+  function jobStatusToProgress(status: VideoJobStatus): number {
+    switch (status) {
+      case "queued":
+        return 5;
+      case "planning":
+        return 10;
+      case "scripting":
+        return 30;
+      case "prompting":
+        return 45;
+      case "generating_clips":
+        return 65;
+      case "voiceover":
+        return 75;
+      case "captions":
+        return 85;
+      case "stitching":
+        return 95;
+      case "complete":
+        return 100;
+      case "error":
+      default:
+        return 0;
+    }
+  }
 
   const handleGenerateVideo = async () => {
     if (!idea.trim()) return;
 
     setProject({
-      status: 'planning',
-      progress: 10
+      status: "planning",
+      progress: 10,
     });
 
     try {
-      // Simulate progressive updates (in production, use WebSockets or Server-Sent Events)
       const formData = new FormData();
-      formData.append('idea', idea);
-      formData.append('style', videoStyle);
-      formData.append('duration', videoDuration[0].toString());
-      formData.append('voiceType', voiceType);
-      formData.append('musicType', musicType);
-      formData.append('includeVoiceover', includeVoiceover.toString());
-      formData.append('includeCaptions', includeCaptions.toString());
-      formData.append('includeMusic', includeMusic.toString());
+      formData.append("idea", idea);
+      formData.append("style", videoStyle);
+      formData.append("duration", videoDuration[0].toString());
+      formData.append("voiceType", voiceType);
+      formData.append("musicType", musicType);
+      formData.append("includeVoiceover", includeVoiceover.toString());
+      formData.append("includeCaptions", includeCaptions.toString());
+      formData.append("includeMusic", includeMusic.toString());
 
-      // Start generation process
-      const response = await generateVideoAction(formData);
-      
-      if (response.error) {
-        setProject({
-          status: 'error',
-          progress: 0,
-          error: response.error
-        });
+      // Start background job
+      const res = await startVideoJobAction(formData);
+      if (res?.error) {
+        console.error("startVideoJobAction error:", res.error);
+        setProject({ status: "error", progress: 0, error: res.error });
         return;
       }
-
-      // Update project with response data
-      setProject({
-        status: 'complete',
-        progress: 100,
-        script: response.script,
-        scenes: response.scenes,
-        videoUrl: response.videoUrl,
-        metadata: {
-          duration: videoDuration[0],
-          style: videoStyle,
-          voiceType: voiceType,
-          musicType: musicType
-        }
-      });
-
-      // Save to user's videos
-      if (response.videoId) {
-        router.push(`/dashboard/videos/${response.videoId}`);
+      if (res?.jobId) {
+        setJobId(res.jobId);
       }
-
     } catch (error) {
+      console.error("handleGenerateVideo error:", error);
       setProject({
-        status: 'error',
+        status: "error",
         progress: 0,
-        error: 'Failed to generate video. Please try again.'
+        error: "Failed to start video generation. Please try again.",
       });
     }
   };
 
+  // Poll for job updates
+  useEffect(() => {
+    if (!jobId) return;
+
+    // Clear any existing interval
+    if (pollRef.current) clearInterval(pollRef.current);
+
+    const tick = async () => {
+      const res = await getVideoJobAction(jobId);
+      if (res?.error) {
+        console.error("getVideoJobAction error:", res.error);
+        setProject((prev) => ({
+          ...prev,
+          status: "error",
+          progress: 0,
+          error: res.error,
+        }));
+        if (pollRef.current) clearInterval(pollRef.current);
+        pollRef.current = null;
+        return;
+      }
+      if (res?.job) {
+        setJob(res.job);
+        const pStatus = jobStatusToProjectStatus[res.job.status];
+        const progress = jobStatusToProgress(res.job.status);
+
+        const combinedScript = (res.job.sections || [])
+          .map((s) => (s.script || "").trim())
+          .filter(Boolean)
+          .join("\n\n");
+
+        setProject((prev) => ({
+          ...prev,
+          status: pStatus,
+          progress,
+          script: combinedScript || prev.script,
+          videoUrl: res.job.video_url || prev.videoUrl,
+          error: res.job.error || undefined,
+          metadata: prev.metadata ?? {
+            duration: videoDuration[0],
+            style: videoStyle,
+            voiceType: voiceType,
+            musicType: musicType,
+          },
+        }));
+
+        if (res.job.status === "complete" || res.job.status === "error") {
+          if (pollRef.current) clearInterval(pollRef.current);
+          pollRef.current = null;
+        }
+      }
+    };
+
+    // Initial tick immediately
+    tick();
+    // Then poll regularly
+    pollRef.current = setInterval(tick, 2000);
+
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+      pollRef.current = null;
+    };
+  }, [jobId]);
+
   const resetProject = () => {
     setProject({
-      status: 'idle',
-      progress: 0
+      status: "idle",
+      progress: 0,
     });
     setIdea("");
+    setJobId(null);
+    setJob(null);
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
   };
+
+  // Helpers for plan UI
+  const sectionChecks = useMemo(() => {
+    return (job?.sections || []).map((s) => ({
+      id: s.id,
+      title: s.title,
+      objective: s.objective,
+      scriptDone: Boolean(s.script && s.script.trim().length > 0),
+      promptDone: Boolean(s.shot_prompt && s.shot_prompt.trim().length > 0),
+      clipDone: Boolean(s.clip_url && s.clip_url.trim().length > 0),
+    }));
+  }, [job]);
+
+  const voiceoverDone = Boolean(job?.voiceover_url);
+  const captionsDone = Boolean(job?.captions && job.captions.length > 0);
 
   return (
     <>
@@ -183,7 +313,7 @@ export default function CreateVideoPage() {
                     value={idea}
                     onChange={(e) => setIdea(e.target.value)}
                     className="min-h-[120px] resize-none"
-                    disabled={project.status !== 'idle'}
+                    disabled={project.status !== "idle"}
                   />
                   <div className="flex gap-2">
                     <Badge variant="outline">
@@ -213,14 +343,14 @@ export default function CreateVideoPage() {
                       <TabsTrigger value="audio">Audio</TabsTrigger>
                       <TabsTrigger value="features">Features</TabsTrigger>
                     </TabsList>
-                    
+
                     <TabsContent value="style" className="space-y-4">
                       <div className="space-y-2">
                         <Label>Video Style</Label>
-                        <Select 
-                          value={videoStyle} 
+                        <Select
+                          value={videoStyle}
                           onValueChange={setVideoStyle}
-                          disabled={project.status !== 'idle'}
+                          disabled={project.status !== "idle"}
                         >
                           <SelectTrigger>
                             <SelectValue />
@@ -234,9 +364,15 @@ export default function CreateVideoPage() {
                             </SelectItem>
                             <SelectItem value="casual">Casual Vlog</SelectItem>
                             <SelectItem value="animated">Animated</SelectItem>
-                            <SelectItem value="minimalist">Minimalist</SelectItem>
-                            <SelectItem value="documentary">Documentary</SelectItem>
-                            <SelectItem value="energetic">High Energy</SelectItem>
+                            <SelectItem value="minimalist">
+                              Minimalist
+                            </SelectItem>
+                            <SelectItem value="documentary">
+                              Documentary
+                            </SelectItem>
+                            <SelectItem value="energetic">
+                              High Energy
+                            </SelectItem>
                           </SelectContent>
                         </Select>
                       </div>
@@ -249,7 +385,7 @@ export default function CreateVideoPage() {
                           min={15}
                           max={60}
                           step={5}
-                          disabled={project.status !== 'idle'}
+                          disabled={project.status !== "idle"}
                           className="w-full"
                         />
                         <div className="flex justify-between text-xs text-muted-foreground">
@@ -264,30 +400,36 @@ export default function CreateVideoPage() {
                     <TabsContent value="audio" className="space-y-4">
                       <div className="space-y-2">
                         <Label>Voice Type</Label>
-                        <Select 
-                          value={voiceType} 
+                        <Select
+                          value={voiceType}
                           onValueChange={setVoiceType}
-                          disabled={project.status !== 'idle' || !includeVoiceover}
+                          disabled={
+                            project.status !== "idle" || !includeVoiceover
+                          }
                         >
                           <SelectTrigger>
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
-                            <SelectItem value="professional">Professional</SelectItem>
+                            <SelectItem value="professional">
+                              Professional
+                            </SelectItem>
                             <SelectItem value="casual">Casual</SelectItem>
                             <SelectItem value="energetic">Energetic</SelectItem>
                             <SelectItem value="calm">Calm</SelectItem>
-                            <SelectItem value="storyteller">Storyteller</SelectItem>
+                            <SelectItem value="storyteller">
+                              Storyteller
+                            </SelectItem>
                           </SelectContent>
                         </Select>
                       </div>
 
                       <div className="space-y-2">
                         <Label>Background Music</Label>
-                        <Select 
-                          value={musicType} 
+                        <Select
+                          value={musicType}
                           onValueChange={setMusicType}
-                          disabled={project.status !== 'idle' || !includeMusic}
+                          disabled={project.status !== "idle" || !includeMusic}
                         >
                           <SelectTrigger>
                             <SelectValue />
@@ -313,7 +455,7 @@ export default function CreateVideoPage() {
                           id="voiceover"
                           checked={includeVoiceover}
                           onCheckedChange={setIncludeVoiceover}
-                          disabled={project.status !== 'idle'}
+                          disabled={project.status !== "idle"}
                         />
                       </div>
 
@@ -326,7 +468,7 @@ export default function CreateVideoPage() {
                           id="captions"
                           checked={includeCaptions}
                           onCheckedChange={setIncludeCaptions}
-                          disabled={project.status !== 'idle'}
+                          disabled={project.status !== "idle"}
                         />
                       </div>
 
@@ -339,7 +481,7 @@ export default function CreateVideoPage() {
                           id="music"
                           checked={includeMusic}
                           onCheckedChange={setIncludeMusic}
-                          disabled={project.status !== 'idle'}
+                          disabled={project.status !== "idle"}
                         />
                       </div>
                     </TabsContent>
@@ -349,7 +491,7 @@ export default function CreateVideoPage() {
 
               {/* Generate Button */}
               <div className="flex gap-4">
-                {project.status === 'idle' ? (
+                {project.status === "idle" ? (
                   <Button
                     onClick={handleGenerateVideo}
                     disabled={!idea.trim()}
@@ -359,7 +501,7 @@ export default function CreateVideoPage() {
                     <Sparkles className="mr-2 w-5 h-5" />
                     Generate Video
                   </Button>
-                ) : project.status === 'complete' ? (
+                ) : project.status === "complete" ? (
                   <>
                     <Button
                       onClick={resetProject}
@@ -373,12 +515,13 @@ export default function CreateVideoPage() {
                     <Button
                       size="lg"
                       className="flex-1 bg-gradient-to-r from-purple-600 to-pink-600"
+                      disabled={!project.videoUrl}
                     >
                       <Download className="mr-2 w-5 h-5" />
                       Download Video
                     </Button>
                   </>
-                ) : project.status === 'error' ? (
+                ) : project.status === "error" ? (
                   <Button
                     onClick={resetProject}
                     variant="outline"
@@ -400,16 +543,16 @@ export default function CreateVideoPage() {
             {/* Right Panel - Preview & Progress */}
             <div className="space-y-6">
               {/* Progress Card */}
-              {project.status !== 'idle' && (
+              {project.status !== "idle" && (
                 <Card>
                   <CardHeader>
                     <CardTitle className="flex items-center gap-2">
-                      {project.status === 'complete' ? (
+                      {project.status === "complete" ? (
                         <>
                           <CheckCircle className="w-5 h-5 text-green-600" />
                           Complete!
                         </>
-                      ) : project.status === 'error' ? (
+                      ) : project.status === "error" ? (
                         <>
                           <AlertCircle className="w-5 h-5 text-red-600" />
                           Error
@@ -437,6 +580,85 @@ export default function CreateVideoPage() {
                         <AlertDescription>{project.error}</AlertDescription>
                       </Alert>
                     )}
+                  </CardContent>
+                </Card>
+              )}
+
+              {/* Plan Card - shows sections with live checkmarks */}
+              {job && (
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2">
+                      <Type className="w-5 h-5 text-purple-600" />
+                      Video Plan
+                    </CardTitle>
+                    <CardDescription>
+                      Checkmarks appear as each part completes
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <div className="space-y-3">
+                      {sectionChecks.map((s, idx) => (
+                        <div
+                          key={s.id}
+                          className="flex items-start justify-between gap-4 p-3 rounded-md border"
+                        >
+                          <div>
+                            <div className="font-medium">
+                              Section {idx + 1}: {s.title}
+                            </div>
+                            <div className="text-sm text-muted-foreground">
+                              {s.objective}
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-3">
+                            <div className="flex items-center gap-1 text-sm">
+                              {s.scriptDone ? (
+                                <CheckCircle className="w-4 h-4 text-green-600" />
+                              ) : (
+                                <Clock className="w-4 h-4 text-muted-foreground" />
+                              )}
+                              <span>Script</span>
+                            </div>
+                            <div className="flex items-center gap-1 text-sm">
+                              {s.promptDone ? (
+                                <CheckCircle className="w-4 h-4 text-green-600" />
+                              ) : (
+                                <Clock className="w-4 h-4 text-muted-foreground" />
+                              )}
+                              <span>Prompt</span>
+                            </div>
+                            <div className="flex items-center gap-1 text-sm">
+                              {s.clipDone ? (
+                                <CheckCircle className="w-4 h-4 text-green-600" />
+                              ) : (
+                                <Clock className="w-4 h-4 text-muted-foreground" />
+                              )}
+                              <span>Clip</span>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="flex items-center gap-2 p-2 rounded-md border">
+                        {voiceoverDone ? (
+                          <CheckCircle className="w-4 h-4 text-green-600" />
+                        ) : (
+                          <Clock className="w-4 h-4 text-muted-foreground" />
+                        )}
+                        <span className="text-sm">Voiceover</span>
+                      </div>
+                      <div className="flex items-center gap-2 p-2 rounded-md border">
+                        {captionsDone ? (
+                          <CheckCircle className="w-4 h-4 text-green-600" />
+                        ) : (
+                          <Clock className="w-4 h-4 text-muted-foreground" />
+                        )}
+                        <span className="text-sm">Captions</span>
+                      </div>
+                    </div>
                   </CardContent>
                 </Card>
               )}
@@ -476,7 +698,9 @@ export default function CreateVideoPage() {
                   </CardHeader>
                   <CardContent>
                     <div className="max-h-48 overflow-y-auto">
-                      <p className="text-sm whitespace-pre-wrap">{project.script}</p>
+                      <p className="text-sm whitespace-pre-wrap">
+                        {project.script}
+                      </p>
                     </div>
                   </CardContent>
                 </Card>
@@ -496,15 +720,21 @@ export default function CreateVideoPage() {
                       </div>
                       <div className="flex justify-between">
                         <span className="text-muted-foreground">Style</span>
-                        <span className="capitalize">{project.metadata.style}</span>
+                        <span className="capitalize">
+                          {project.metadata.style}
+                        </span>
                       </div>
                       <div className="flex justify-between">
                         <span className="text-muted-foreground">Voice</span>
-                        <span className="capitalize">{project.metadata.voiceType}</span>
+                        <span className="capitalize">
+                          {project.metadata.voiceType}
+                        </span>
                       </div>
                       <div className="flex justify-between">
                         <span className="text-muted-foreground">Music</span>
-                        <span className="capitalize">{project.metadata.musicType}</span>
+                        <span className="capitalize">
+                          {project.metadata.musicType}
+                        </span>
                       </div>
                     </div>
                   </CardContent>
