@@ -301,14 +301,21 @@ async function generateVoiceover(job: VideoJob): Promise<VideoJob> {
   const fullScript = job.sections.map(s => s.script).join(' ').trim();
   if (!fullScript) throw new Error('Empty script cannot generate voiceover');
 
-  // Choose a default voice if not specified; could extend job schema later
-  const defaultVoice = 'professional';
+  // Heuristic voice selection based on idea & section titles/objectives
+  const text = (job.idea + ' ' + job.sections.map(s => `${s.title} ${s.objective}`).join(' ')).toLowerCase();
+  let voice: string = 'professional';
+  if (/energy|exciting|fast|hype|extreme|viral|high energy/.test(text)) voice = 'energetic';
+  else if (/calm|relax|soothing|meditat|sleep|ambient|focus/.test(text)) voice = 'calm';
+  else if (/story|narrat|once upon|journey|adventure|history/.test(text)) voice = 'storyteller';
+  else if (/investigat|mystery|true crime|analysis|deep dive|forensic/.test(text)) voice = 'calm';
+  else if (/casual|vlog|day in the life|behind the scenes/.test(text)) voice = 'casual';
+
   const voiceoverUrl = await ttsGenerateVoiceover({
     text: fullScript,
-    voice: defaultVoice,
+    voice,
     speed: 1.0
   });
-  return await updateJob(job.id, { voiceover_url: voiceoverUrl });
+  return await updateJob(job.id, { voiceover_url: voiceoverUrl, voice_id: voice });
 }
 
 async function generateCaptions(job: VideoJob): Promise<VideoJob> {
@@ -331,7 +338,8 @@ async function stitch(job: VideoJob): Promise<VideoJob> {
       videoClips: clipUrls,
       audioUrl: job.voiceover_url || undefined,
       captions: job.captions || undefined,
-      durations: job.sections.map(s => s.target_seconds || 5)
+  durations: job.sections.map(s => s.target_seconds || 5),
+  captionStyle: job.voice_id || undefined
     });
     return await updateJob(job.id, { video_url: finalUrl });
   } catch (err) {

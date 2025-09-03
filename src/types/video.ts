@@ -33,6 +33,7 @@ export interface VideoJob {
   status: VideoJobStatus;
   sections: VideoSection[];
   voiceover_url?: string | null;
+  voice_id?: string | null; // chosen voice profile key used
   captions?: CaptionSegment[];
   video_url?: string | null;
   error?: string | null;

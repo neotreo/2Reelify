@@ -173,10 +173,13 @@ export async function generateVoiceover(params: GenerateVoiceoverParams): Promis
     // Allow passing either a friendly alias (e.g. 'professional') or a raw ElevenLabs voice ID.
     // We'll resolve aliases using VOICE_OPTIONS if available.
     const aliasResolved = (VOICE_OPTIONS as any)?.[params.voice] || params.voice;
+    const hasKey = !!process.env.ELEVENLABS_API_KEY;
+    const isPlaceholder = /^voice_id_(professional|casual|energetic|calm|storyteller)/.test(aliasResolved);
 
-    // Fallback / demo mode: if no API key or a placeholder voice ID is still present, create a stub silent WAV.
-    if (!process.env.ELEVENLABS_API_KEY || /^voice_id_/.test(aliasResolved)) {
-      console.warn('[voiceover] Using stub audio (missing ELEVENLABS_API_KEY or placeholder voice id).');
+    // Fallback / demo mode: if no API key or still using placeholder mapping (not replaced with real ElevenLabs ID)
+    if (!hasKey || isPlaceholder) {
+      if (!hasKey) console.warn('[voiceover] Missing ELEVENLABS_API_KEY, using stub audio.');
+      else console.warn('[voiceover] Placeholder alias not mapped to real ElevenLabs voice ID, using stub audio.');
       const stubBlob = createStubSilentWav({ seconds: 1.5 });
       return await uploadAudioToStorage(stubBlob, { filenamePrefix: 'stub' });
     }
@@ -224,11 +227,16 @@ export async function processAndCombineVideos(params: {
   musicUrl?: string;
   captions?: Array<{ text: string; start: number; end: number }>;
   durations?: number[]; // seconds per clip (optional)
+  captionStyle?: string; // theme key (energetic|calm|professional|storyteller|casual)
 }): Promise<string> {
   try {
     // Prefer Shotstack if API key present
-    if (process.env.SHOTSTACK_API_KEY) {
-      return await processWithShotstack(params);
+  if (process.env.SHOTSTACK_API_KEY) {
+      try {
+    return await processWithShotstack(params);
+      } catch (e) {
+        console.error('[stitch] Shotstack failed, falling back to simple concatenation placeholder:', e);
+      }
     }
     // Custom processor fallback
     if (process.env.VIDEO_PROCESSOR_URL) {
@@ -266,9 +274,22 @@ async function processWithShotstack(params: {
   audioUrl?: string;
   captions?: Array<{ text: string; start: number; end: number }>;
   durations?: number[];
+  captionStyle?: string;
 }): Promise<string> {
-  const env = (process.env.SHOTSTACK_ENV || 'stage').toLowerCase(); // stage | prod
-  const base = `https://api.shotstack.io/v1/${env}`;
+  // Shotstack now uses Edit API base: https://api.shotstack.io/edit/{version}
+  // version is either 'v1' (production) or 'stage' (sandbox). Older code used SHOTSTACK_ENV=prod|stage.
+  const legacyEnv = (process.env.SHOTSTACK_ENV || '').toLowerCase();
+  let version = (process.env.SHOTSTACK_EDIT_VERSION || '').toLowerCase();
+  if (!version) {
+    if (legacyEnv === 'prod' || legacyEnv === 'production') version = 'v1';
+    else if (legacyEnv === 'stage' || legacyEnv === 'staging') version = 'stage';
+    else version = 'stage';
+  }
+  if (!['v1','stage'].includes(version)) {
+    console.warn(`[shotstack] Invalid SHOTSTACK_EDIT_VERSION '${version}', defaulting to 'stage'`);
+    version = 'stage';
+  }
+  const base = `https://api.shotstack.io/edit/${version}`;
   const apiKey = process.env.SHOTSTACK_API_KEY!;
 
   // Derive durations: use provided, else equal split of total caption time or default 5s
@@ -302,11 +323,20 @@ async function processWithShotstack(params: {
   // Basic caption track (burned-in) using title assets per word/segment (simplified)
   let captionClips: any[] = [];
   if (params.captions && params.captions.length) {
-    captionClips = params.captions.slice(0, 120).map(c => ({
-      asset: { type: 'title', text: c.text, style: 'minimal', size: 'small', position: 'bottom' },
+    const theme = getCaptionTheme(params.captionStyle);
+    captionClips = params.captions.slice(0, 200).map(c => ({
+      asset: {
+        type: 'title',
+        text: c.text,
+        style: theme.style,
+        size: theme.size,
+        position: theme.position,
+        color: theme.color,
+        background: theme.background || undefined
+      },
       start: c.start,
-      length: Math.max(0.5, c.end - c.start),
-      transition: 'fade'
+      length: Math.max(theme.minLength || 0.45, Math.min(theme.maxLength || 8, c.end - c.start || theme.defaultLength || 1.2)),
+      transition: theme.transition || 'fade'
     }));
   }
 
@@ -332,7 +362,7 @@ async function processWithShotstack(params: {
   });
   if (!renderRes.ok) {
     const txt = await renderRes.text();
-    throw new Error('Shotstack render request failed: ' + txt);
+  throw new Error('Shotstack render request failed: ' + txt);
   }
   const renderData = await renderRes.json();
   const id = renderData.id || renderData.response?.id;
@@ -422,17 +452,73 @@ export async function generateCaptions(audioUrl: string): Promise<Array<{
     });
 
     const result = await response.json();
-    
-    // Process the segments into caption format
-    const captions = Array.isArray(result.segments)
-      ? result.segments.map((segment: any) => ({
-          text: (segment.text || '').trim(),
-          start: segment.start,
-          end: segment.end
-        }))
-      : [];
 
-    return captions;
+    // Prefer word-level granularity if present (OpenAI verbose_json can include segments or words)
+    const rawWords: any[] = Array.isArray(result.words)
+      ? result.words
+      : Array.isArray(result.segments)
+        ? result.segments.flatMap((seg: any) => Array.isArray(seg.words) ? seg.words : [{ start: seg.start, end: seg.end, word: seg.text }])
+        : [];
+
+    // Fallback: if no word objects found, build from segments
+    if (!rawWords.length && Array.isArray(result.segments)) {
+      return result.segments.map((segment: any) => ({
+        text: (segment.text || '').trim(),
+        start: segment.start,
+        end: segment.end
+      }));
+    }
+
+    // Merge words into readable phrase segments for on-screen display
+    interface Word { start: number; end: number; word: string; }
+    const words: Word[] = rawWords
+      .filter(w => typeof w.start === 'number' && typeof w.end === 'number')
+      .map(w => ({ start: w.start, end: w.end, word: String(w.word || w.text || '').trim() }))
+      .filter(w => w.word.length);
+
+    function mergeWords(words: Word[], opts: { maxWords: number; maxDuration: number; gap: number }): { text: string; start: number; end: number }[] {
+      const out: { text: string; start: number; end: number }[] = [];
+      let bucket: Word[] = [];
+      for (let i = 0; i < words.length; i++) {
+        const w = words[i];
+        if (!bucket.length) {
+          bucket.push(w);
+          continue;
+        }
+        const prev = bucket[bucket.length - 1];
+        const gap = w.start - prev.end;
+        const bucketDuration = bucket[bucket.length - 1].end - bucket[0].start;
+        if (
+          bucket.length >= opts.maxWords ||
+          bucketDuration >= opts.maxDuration ||
+          gap > opts.gap
+        ) {
+          out.push({
+            text: bucket.map(b => b.word).join(' ').replace(/\s+/g, ' ').trim(),
+            start: bucket[0].start,
+            end: bucket[bucket.length - 1].end
+          });
+          bucket = [w];
+        } else {
+          bucket.push(w);
+        }
+      }
+      if (bucket.length) {
+        out.push({
+          text: bucket.map(b => b.word).join(' ').replace(/\s+/g, ' ').trim(),
+          start: bucket[0].start,
+          end: bucket[bucket.length - 1].end
+        });
+      }
+      return out;
+    }
+
+    const merged = mergeWords(words, { maxWords: 7, maxDuration: 2.8, gap: 0.55 })
+      .filter(s => s.text);
+
+    // Limit to first N captions for Shotstack (avoid overload). Keep ~180 segments max.
+    const limited = merged.slice(0, 180);
+    return limited;
   } catch (error) {
     console.error('Caption generation error:', error);
     throw new Error('Failed to generate captions');
@@ -480,13 +566,41 @@ async function safeReadText(response: Response): Promise<string> {
 
 // Voice options configuration
 export const VOICE_OPTIONS = {
-  professional: 'voice_id_professional', // Replace with actual ElevenLabs voice IDs
-  casual: 'voice_id_casual',
-  energetic: 'voice_id_energetic',
-  calm: 'voice_id_calm',
-  storyteller: 'voice_id_storyteller'
+  storyteller: 'qAZH0aMXY8tw1QufPN0D',
+  energetic: 'RexqLjNzkCjWogguKyff',
+  calm: 'a1TnjruAs5jTzdrjL8Vd',
+  professional: 'uju3wxzG5OhpWcoi3SMy',
+  casual: 'UgBBYS2sOqTuMpoF3BR0'
 };
 
+// Caption theme helper
+function getCaptionTheme(theme?: string) {
+  const base = {
+    style: 'minimal',
+    size: 'small',
+    position: 'bottom',
+    color: '#FFFFFF',
+    background: null as string | null,
+    transition: 'fade',
+    minLength: 0.45,
+    maxLength: 6,
+    defaultLength: 1.2
+  };
+  switch ((theme || '').toLowerCase()) {
+    case 'energetic':
+      return { ...base, style: 'subtitle', color: '#FFE600', background: '#00000066' };
+    case 'calm':
+      return { ...base, style: 'minimal', color: '#E0F7FA' };
+    case 'professional':
+      return { ...base, style: 'minimal', color: '#FFFFFF' };
+    case 'storyteller':
+      return { ...base, style: 'subtitle', color: '#FFD8A8' };
+    case 'casual':
+      return { ...base, style: 'minimal', color: '#FFD54F' };
+    default:
+      return base;
+  }
+}
 // Background music options (URLs to royalty-free music)
 export const MUSIC_OPTIONS = {
   upbeat: '/music/upbeat.mp3',
