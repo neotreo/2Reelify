@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -63,6 +63,13 @@ export default function VideoCard({ video }: VideoCardProps) {
   const [showPreviewDialog, setShowPreviewDialog] = useState(false);
   const [showShareDialog, setShowShareDialog] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [shareUrl, setShareUrl] = useState<string>("");
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      setShareUrl(`${window.location.origin}/videos/${video.id}`);
+    }
+  }, [video.id]);
 
   const handleDelete = async () => {
     setIsDeleting(true);
@@ -84,10 +91,12 @@ export default function VideoCard({ video }: VideoCardProps) {
   };
 
   const handleShare = () => {
-    const shareUrl = `${window.location.origin}/videos/${video.id}`;
-    navigator.clipboard.writeText(shareUrl);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    if (!shareUrl) return;
+    if (typeof navigator !== "undefined" && navigator.clipboard) {
+      navigator.clipboard.writeText(shareUrl);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
   };
 
   const formatDuration = (seconds?: number) => {
@@ -317,7 +326,7 @@ export default function VideoCard({ video }: VideoCardProps) {
           <div className="flex gap-2">
             <input
               type="text"
-              value={`${window.location.origin}/videos/${video.id}`}
+              value={shareUrl}
               readOnly
               className="flex-1 px-3 py-2 border rounded-lg bg-muted"
             />

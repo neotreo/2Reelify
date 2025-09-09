@@ -46,8 +46,11 @@ export async function startVideoJobAction(
     const idea = (formData.get("idea") as string)?.trim();
     if (!idea) return { error: "Please describe your video idea" };
 
+    const scriptModel = (formData.get("scriptModel") as string) || undefined;
+    const videoModel = (formData.get("videoModel") as string) || undefined;
+
     // Kick off background pipeline
-    const job = await createVideoJob(idea, user.id);
+    const job = await createVideoJob(idea, user.id, { scriptModel, videoModel });
     return { jobId: job.id };
   } catch (e: any) {
     const msg = e?.message || (typeof e === "string" ? e : JSON.stringify(e));
@@ -102,7 +105,7 @@ export async function generateVideoAction(
   // Allow exactly 1 free video if no active subscription
   if (!subscription) {
     const { count, error: countError } = await supabase
-      .from("videos")
+      .from("video_jobs")
       .select("id", { count: "exact", head: true })
       .eq("user_id", user.id);
 
@@ -134,7 +137,8 @@ export async function generateVideoAction(
     const includeCaptions = formData.get("includeCaptions") === "true";
     const includeMusic = formData.get("includeMusic") === "true";
 
-    const isTrial = !subscription;
+  const isTrial = !subscription;
+  const videoModel = (formData.get('videoModel') as string) || undefined;
     const duration = isTrial
       ? Math.min(
           Number.isFinite(requestedDuration) ? requestedDuration : 30,
@@ -155,7 +159,7 @@ export async function generateVideoAction(
     }
 
     // Step 2: Generate video clips for each scene
-    const videoClips = await generateVideoClips(scriptData.scenes, style);
+  const videoClips = await generateVideoClips(scriptData.scenes, style, videoModel);
     if (!videoClips || videoClips.length === 0) {
       return { error: "Failed to generate video clips" };
     }
@@ -246,6 +250,7 @@ async function generateScript(
 async function generateVideoClips(
   scenes: ScriptScene[],
   style: string,
+  videoModel?: string,
 ): Promise<string[]> {
   try {
     const clips = await Promise.all(
@@ -256,6 +261,7 @@ async function generateVideoClips(
           duration: Math.min(Math.max(scene.duration, 2), 12),
           style,
           aspectRatio: "9:16",
+          modelId: videoModel,
         }),
       ),
     );
@@ -313,15 +319,34 @@ export async function getUserVideos() {
     return { error: "Not authenticated", videos: [] };
   }
 
-  const { data: videos, error } = await supabase
-    .from("videos")
-    .select("*")
-    .eq("user_id", user.id)
-    .order("created_at", { ascending: false });
+  // Fetch from video_jobs instead of videos and map to UI shape
+  const { data: jobs, error } = await supabase
+    .from('video_jobs')
+    .select('id, idea, status, video_url, voiceover_url, captions, created_at')
+    .eq('user_id', user.id)
+    .order('created_at', { ascending: false });
 
   if (error) {
     return { error: error.message, videos: [] };
   }
+
+  const videos = (jobs || []).map((j: any) => ({
+    id: j.id,
+    title: (j.idea || 'Untitled').slice(0, 100),
+    description: j.idea || undefined,
+    video_url: j.video_url || undefined,
+    thumbnail_url: undefined,
+    duration: Array.isArray(j.captions) && j.captions.length
+      ? Math.round((j.captions[j.captions.length - 1].end || 0))
+      : undefined,
+    style: undefined,
+    status: j.status,
+    view_count: 0,
+    created_at: j.created_at,
+    has_voiceover: !!j.voiceover_url,
+    has_captions: Array.isArray(j.captions) && j.captions.length > 0,
+    has_music: false,
+  }));
 
   return { videos, error: null };
 }
@@ -338,10 +363,10 @@ export async function deleteVideo(videoId: string) {
   }
 
   const { error } = await supabase
-    .from("videos")
+    .from('video_jobs')
     .delete()
-    .eq("id", videoId)
-    .eq("user_id", user.id);
+    .eq('id', videoId)
+    .eq('user_id', user.id);
 
   if (error) {
     return { error: error.message };

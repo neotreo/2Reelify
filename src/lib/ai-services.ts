@@ -4,10 +4,16 @@
 import OpenAI from 'openai';
 import Replicate from 'replicate';
 
-// Initialize OpenAI client (for script generation and GPT features)
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY!,
-});
+// Lazy OpenAI client accessor (avoid build-time crash if key missing)
+let _openai: OpenAI | null = null;
+function getOpenAI(): OpenAI {
+  if (!_openai) {
+    const key = process.env.OPENAI_API_KEY;
+    if (!key) throw new Error('OPENAI_API_KEY not set');
+    _openai = new OpenAI({ apiKey: key });
+  }
+  return _openai;
+}
 
 // Types
 export interface GenerateScriptParams {
@@ -45,37 +51,42 @@ export async function generateScriptWithAI(params: GenerateScriptParams): Promis
   scenes: ScriptScene[];
 }> {
   try {
-    const systemPrompt = `You are an expert short-form video scriptwriter specializing in viral content for TikTok, Instagram Reels, and YouTube Shorts. 
-    Create engaging, punchy scripts that hook viewers immediately and maintain attention throughout.`;
+    const systemPrompt = `You are a senior creative copywriter crafting NATURAL sounding spoken narration for short vertical videos (TikTok/Reels/Shorts). 
+Principles:
+- Open with an immediate hook (curiosity, tension, surprise, benefit) in the first seconds.
+- Sound like a human thinking out loud – vary sentence length, occasionally use a rhetorical question, mix micro-pauses (represented with commas or an em dash) for rhythm.
+- DO NOT enumerate sections or say “Section 1/2/3,” or “Firstly/Secondly.” Avoid listy cadence.
+- Seamlessly bridge ideas; each sentence should propel the next (cause → effect, question → answer, setup → payoff).
+- Remove filler sign‑offs like “and that’s it.” End on a punch, insight, or call to curiosity.
+- Keep wording concise but visually evocative; no corporate fluff.
+Video prompt guidance:
+- For each scene generate a rich very descriptive visual prompt: subject(s), setting, camera perspective/movement, lighting, mood, color palette, motion/action, texture, atmosphere.
+- Avoid generic words alone (e.g. “cinematic shot”). Combine specifics (e.g. “handheld medium shot of a runner exhaling mist in cold dawn light, warm amber rim light, shallow depth of field, subtle particles in air”).
+- No on-screen text directions, watermarks, logos, or UI references.`;
 
-    const userPrompt = `Create a ${params.duration}-second video script about: "${params.idea}"
-    
-    Style: ${params.style}
-    
-    Requirements:
-    1. Start with a strong hook in the first 3 seconds
-    2. Keep it concise and engaging
-    3. Break the script into scenes (each 5-10 seconds)
-    4. For each scene, provide:
-       - The narration text
-       - Duration in seconds
-       - A detailed visual prompt for AI video generation
-    5. End with a call-to-action or thought-provoking statement
-    
-    Return the response in this JSON format:
+    const userPrompt = `Create an approximately ${params.duration} second vertical video narration about: "${params.idea}".
+Style guidance: ${params.style}
+
+Return JSON ONLY in this shape:
+{
+  "script": "full narration (concatenation of all scenes) WITHOUT scene labels",
+  "scenes": [
     {
-      "script": "full script text here",
-      "scenes": [
-        {
-          "text": "narration for this scene",
-          "duration": 5,
-          "videoPrompt": "detailed prompt for video generation",
-          "transitionType": "fade|cut|zoom"
-        }
-      ]
-    }`;
+      "text": "spoken narration for this slice (no numbering)",
+      "duration": 6,
+      "videoPrompt": "rich very descriptive visual generation prompt",
+      "transitionType": "fade|cut|zoom|none"
+    }
+  ]
+}
 
-    const response = await openai.chat.completions.create({
+Rules:
+- 5 to 8 scenes total.
+- Scene durations should be varied (some short punchy 3–4s, some medium 6–9s) and sum close to ${params.duration} (±3s tolerance).
+- No explicit scene labels inside the text.
+- Each videoPrompt must be 14–100 words, specific and cinematic (camera, lighting, motion, subject, atmosphere, palette).`;
+
+  const response = await getOpenAI().chat.completions.create({
       model: "gpt-4-turbo-preview",
       messages: [
         { role: "system", content: systemPrompt },
@@ -87,9 +98,19 @@ export async function generateScriptWithAI(params: GenerateScriptParams): Promis
     });
 
     const result = JSON.parse(response.choices[0].message.content || '{}');
+    let scenes: ScriptScene[] = Array.isArray(result.scenes) ? result.scenes : [];
+    // Light touch: clamp obviously extreme values but DO NOT force-fit total to params.duration
+    if (scenes.length) {
+      const MIN = 2.5; const MAX = 14;
+      scenes = scenes.map(s => {
+        let d = typeof s.duration === 'number' && s.duration > 0 ? s.duration : 5;
+        if (d < MIN) d = MIN; else if (d > MAX) d = MAX;
+        return { ...s, duration: Math.round(d * 10) / 10 };
+      });
+    }
     return {
-      script: result.script || '',
-      scenes: result.scenes || []
+      script: typeof result.script === 'string' ? result.script : (scenes.map(s => s.text).join(' ') || ''),
+      scenes
     };
   } catch (error) {
     console.error('Script generation error:', error);
@@ -106,7 +127,57 @@ export async function generateVideoClip(params: GenerateVideoParams): Promise<st
   const replicate = new Replicate({ auth: token });
 
   // Default model (fast WAN 2.2 text-to-video) unless overridden by user input
-  const model = params.modelId || 'wan-video/wan-2.2-t2v-fast';
+  let model = params.modelId || 'wan-video/wan-2.2-t2v-fast';
+  console.info('[video] generateVideoClip requested model:', params.modelId, 'using model:', model);
+
+  const isKling = /kling-v2\.1/.test(model);
+  if (isKling) {
+    // Kling requires a start image. Generate one using Imagen 4 Fast.
+    try {
+      const imagePrompt = `High quality single frame reference for video: ${params.prompt}`.slice(0, 900);
+      const imgInput: any = {
+        prompt: imagePrompt,
+        aspect_ratio: '4:3',
+        output_format: 'jpg',
+        safety_filter_level: 'block_only_high'
+      };
+      let startImageUrl: string | undefined;
+      try {
+        const imgOut: any = await replicate.run('google/imagen-4-fast', { input: imgInput });
+        if (imgOut) {
+          if (typeof imgOut === 'string') startImageUrl = imgOut;
+          else if (Array.isArray(imgOut) && imgOut.length) startImageUrl = imgOut[0];
+          else if (imgOut.url && typeof imgOut.url === 'function') startImageUrl = imgOut.url();
+          else if (imgOut.url && typeof imgOut.url === 'string') startImageUrl = imgOut.url;
+        }
+      } catch (e) {
+        console.warn('[kling] Failed to create start image via Imagen 4 Fast:', (e as any)?.message);
+      }
+      if (!startImageUrl) {
+        // Fallback blank 1x1 transparent PNG (data URI could work, but Kling expects URL; we proceed without start image)
+        console.warn('[kling] Proceeding without start image (generation failed)');
+      }
+      const input: any = {
+        mode: 'standard',
+        prompt: params.prompt,
+        duration: Math.max(2, Math.min(14, Math.round(params.duration || 6))),
+        negative_prompt: '',
+      };
+      if (startImageUrl) input.start_image = startImageUrl;
+      const output: any = await replicate.run(model as any, { input });
+      if (!output) throw new Error('Empty kling output');
+      if (typeof output === 'string') return output;
+      if (Array.isArray(output) && output.length) return output[0];
+      if (output.url && typeof output.url === 'function') return output.url();
+      if (output.url && typeof output.url === 'string') return output.url;
+      if (output.video) return output.video;
+      throw new Error('Unrecognized kling output format');
+    } catch (err) {
+      console.error('[kling] generation failed, falling back to WAN fast model:', (err as any)?.message);
+      // Explicitly change model so subsequent WAN path truly uses WAN model
+      model = 'wan-video/wan-2.2-t2v-fast';
+    }
+  }
 
   // WAN 2.2 expected inputs (keeping everything static except aspect_ratio & duration-derived num_frames)
   // Reference example provided by user.
@@ -126,7 +197,7 @@ export async function generateVideoClip(params: GenerateVideoParams): Promise<st
   let lastErr: any;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      const output: any = await replicate.run(model, {
+  const output: any = await replicate.run(model as any, {
         input: {
           prompt,
           go_fast: true,
@@ -240,7 +311,7 @@ export async function processAndCombineVideos(params: {
     }
     // Custom processor fallback
     if (process.env.VIDEO_PROCESSOR_URL) {
-      const response = await fetch(`${process.env.VIDEO_PROCESSOR_URL}/process`, {
+  const response = await fetch(`${process.env.VIDEO_PROCESSOR_URL}/process`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -257,8 +328,10 @@ export async function processAndCombineVideos(params: {
         })
       });
       if (!response.ok) throw new Error(`Video processor failed: ${response.status}`);
-      const result = await response.json();
-      return result.videoUrl || params.videoClips[0];
+  let result: any = null;
+  try { result = await response.json(); }
+  catch { console.warn('[processor] Non-JSON response body'); }
+      return result?.videoUrl || params.videoClips[0];
     }
     // Last resort: return first clip
     return params.videoClips[0];
@@ -292,31 +365,41 @@ async function processWithShotstack(params: {
   const base = `https://api.shotstack.io/edit/${version}`;
   const apiKey = process.env.SHOTSTACK_API_KEY!;
 
-  // Derive durations: use provided, else equal split of total caption time or default 5s
-  let durations = params.durations && params.durations.length === params.videoClips.length
-    ? params.durations
-    : undefined;
-  if (!durations) {
-    let total = params.captions?.length ? params.captions[params.captions.length - 1].end : 0;
-    if (total && total > 4) {
-      const avg = total / params.videoClips.length;
-      durations = Array(params.videoClips.length).fill(0).map(() => avg);
-    } else {
-      durations = Array(params.videoClips.length).fill(5);
-    }
+  // Derive target durations from caption timeline (voiceover) if available; otherwise fallback equal split heuristic.
+  let durations: number[];
+  const lastCaptionEnd = params.captions?.length ? params.captions[params.captions.length - 1].end : 0;
+  if (lastCaptionEnd && lastCaptionEnd > 1) {
+    // Evenly divide total voiceover duration among clips (simple heuristic).
+    const per = lastCaptionEnd / params.videoClips.length;
+    durations = params.videoClips.map(() => per);
+  } else {
+    durations = params.videoClips.map(() => 6);
   }
 
   // Build timeline clips
   let currentStart = 0;
+  // Approximate original generated clip length constraints (WAN fast ~5.06s to ~7.56s); adjust playback speed to fit desired length
+  const MIN_ORIG = 81/16; // ~5.06
+  const MAX_ORIG = 121/16; // ~7.56
   const clips = params.videoClips.map((src, i) => {
-    const length = Math.max(1, Math.min(15, durations![i] || 5));
+    const desired = Math.max(0.75, durations[i] || 5);
+    // Heuristic: assume original length clamped to model bounds relative to desired
+    let assumedOriginal = desired;
+    if (assumedOriginal < MIN_ORIG) assumedOriginal = MIN_ORIG;
+    if (assumedOriginal > MAX_ORIG) assumedOriginal = MAX_ORIG;
+    // speed = original / desired -> <1 slows down (extends), >1 speeds up
+    let speed = assumedOriginal / desired;
+    // Constrain extreme speed changes
+    if (speed < 0.4) speed = 0.4;
+    if (speed > 2.2) speed = 2.2;
     const clip = {
       asset: { type: 'video', src },
       start: currentStart,
-      length,
-      fit: 'cover'
+      length: desired,
+      fit: 'cover',
+      speed
     } as any;
-    currentStart += length;
+    currentStart += desired;
     return clip;
   });
 
@@ -330,20 +413,23 @@ async function processWithShotstack(params: {
         text: c.text,
         style: theme.style,
         size: theme.size,
-        position: theme.position,
         color: theme.color,
         background: theme.background || undefined
       },
+      // Place subtitles at the bottom of the frame
+      position: theme.position,
       start: c.start,
       length: Math.max(theme.minLength || 0.45, Math.min(theme.maxLength || 8, c.end - c.start || theme.defaultLength || 1.2)),
-      transition: theme.transition || 'fade'
+      transition: { in: theme.transition || 'fade', out: theme.transition || 'fade' }
     }));
   }
 
   const body = {
     timeline: {
       soundtrack: params.audioUrl ? { src: params.audioUrl, effect: 'fadeInFadeOut' } : undefined,
-      tracks: [ { clips }, captionClips.length ? { clips: captionClips } : undefined ].filter(Boolean)
+      tracks: [ { clips }, captionClips.length ? { clips: captionClips } : undefined ].filter(Boolean),
+      // Ensure overall timeline ends when captions end (if captions exist)
+      background: null
     },
     output: {
       format: 'mp4',
@@ -476,7 +562,7 @@ export async function generateCaptions(audioUrl: string): Promise<Array<{
       .map(w => ({ start: w.start, end: w.end, word: String(w.word || w.text || '').trim() }))
       .filter(w => w.word.length);
 
-    function mergeWords(words: Word[], opts: { maxWords: number; maxDuration: number; gap: number }): { text: string; start: number; end: number }[] {
+  const mergeWords = (words: Word[], opts: { maxWords: number; maxDuration: number; gap: number }): { text: string; start: number; end: number }[] => {
       const out: { text: string; start: number; end: number }[] = [];
       let bucket: Word[] = [];
       for (let i = 0; i < words.length; i++) {
@@ -511,7 +597,7 @@ export async function generateCaptions(audioUrl: string): Promise<Array<{
         });
       }
       return out;
-    }
+  }
 
     const merged = mergeWords(words, { maxWords: 7, maxDuration: 2.8, gap: 0.55 })
       .filter(s => s.text);
@@ -577,7 +663,7 @@ export const VOICE_OPTIONS = {
 function getCaptionTheme(theme?: string) {
   const base = {
     style: 'minimal',
-    size: 'small',
+  size: 'x-small',
     position: 'bottom',
     color: '#FFFFFF',
     background: null as string | null,

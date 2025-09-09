@@ -15,9 +15,8 @@ export const createClient = async () => {
               name,
               value,
             }));
-          } catch (error) {
-            // If cookies() is called in an environment where it's not allowed
-            console.error("Error accessing cookies:", error);
+          } catch (_error) {
+            // Silently ignore in environments where cookies() is not available
             return [];
           }
         },
@@ -26,9 +25,8 @@ export const createClient = async () => {
             cookiesToSet.forEach(({ name, value, options }) => {
               cookieStore.set(name, value, options);
             });
-          } catch (error) {
-            // If cookies() is called in an environment where it's not allowed
-            console.error("Error setting cookies:", error);
+          } catch (_error) {
+            // Silently ignore when not in a Server Action or Route Handler
           }
         },
       },

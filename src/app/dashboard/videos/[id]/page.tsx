@@ -12,7 +12,6 @@ import {
   Download,
   Share2,
   Eye,
-  Calendar,
   Clock,
   Film,
   Mic,
@@ -31,14 +30,14 @@ export default async function VideoDetailPage({ params }: { params: { id: string
     notFound();
   }
 
-  const { data: video, error } = await supabase
-    .from('videos')
+  const { data: job, error } = await supabase
+    .from('video_jobs')
     .select('*')
     .eq('id', params.id)
     .eq('user_id', user.id)
     .single();
 
-  if (error || !video) {
+  if (error || !job) {
     notFound();
   }
 
@@ -58,6 +57,10 @@ export default async function VideoDetailPage({ params }: { params: { id: string
     return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
 
+  const computedDuration = Array.isArray(job.captions) && job.captions.length
+    ? Math.round((job.captions[job.captions.length - 1].end || 0))
+    : (Array.isArray(job.sections) ? job.sections.reduce((acc: number, s: any) => acc + (s.target_seconds || 0), 0) : 0);
+
   return (
     <>
       <DashboardNavbar />
@@ -72,9 +75,9 @@ export default async function VideoDetailPage({ params }: { params: { id: string
                 </Button>
               </Link>
               <div>
-                <h1 className="text-2xl font-bold">{video.title}</h1>
+                <h1 className="text-2xl font-bold">{(job.idea || 'Untitled').slice(0, 100)}</h1>
                 <p className="text-muted-foreground mt-1">
-                  Created on {formatDate(video.created_at)}
+                  Created on {formatDate(job.created_at)}
                 </p>
               </div>
             </div>
@@ -83,7 +86,7 @@ export default async function VideoDetailPage({ params }: { params: { id: string
                 <Share2 className="w-4 h-4 mr-2" />
                 Share
               </Button>
-              <Button className="bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700">
+              <Button className="bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700" disabled={job.status !== 'complete' || !job.video_url}>
                 <Download className="w-4 h-4 mr-2" />
                 Download
               </Button>
@@ -96,16 +99,15 @@ export default async function VideoDetailPage({ params }: { params: { id: string
               <Card>
                 <CardContent className="p-0">
                   <div className="aspect-[9/16] max-h-[70vh] mx-auto">
-                    {video.video_url && video.status === 'complete' ? (
+                    {job.video_url && job.status === 'complete' ? (
                       <VideoPlayer 
-                        url={video.video_url}
-                        poster={video.thumbnail_url}
+                        url={job.video_url}
                       />
-                    ) : video.status === 'processing' ? (
+                    ) : job.status !== 'error' ? (
                       <div className="w-full h-full bg-gradient-to-b from-purple-100 to-pink-100 rounded-lg flex items-center justify-center">
                         <div className="text-center">
                           <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-purple-600 mx-auto mb-4"></div>
-                          <p className="text-lg font-semibold">Processing Video...</p>
+                          <p className="text-lg font-semibold">{job.status === 'stitching' ? 'Stitching Video...' : 'Processing Video...'}</p>
                           <p className="text-muted-foreground text-sm mt-2">
                             This may take a few minutes
                           </p>
@@ -120,48 +122,52 @@ export default async function VideoDetailPage({ params }: { params: { id: string
                 </CardContent>
               </Card>
 
-              {/* Tabs for Script and Scenes */}
+              {/* Tabs for Script and Sections */}
               <Card className="mt-6">
                 <Tabs defaultValue="script" className="w-full">
                   <CardHeader>
                     <TabsList className="grid w-full grid-cols-2">
                       <TabsTrigger value="script">Script</TabsTrigger>
-                      <TabsTrigger value="scenes">Scene Breakdown</TabsTrigger>
+                      <TabsTrigger value="sections">Section Breakdown</TabsTrigger>
                     </TabsList>
                   </CardHeader>
                   <CardContent>
                     <TabsContent value="script" className="space-y-4">
-                      {video.script ? (
+                      {Array.isArray(job.sections) && job.sections.length ? (
                         <div className="prose prose-sm max-w-none">
-                          <p className="whitespace-pre-wrap">{video.script}</p>
+                          <p className="whitespace-pre-wrap">{job.sections.map((s: any) => s.script).filter(Boolean).join('\n\n')}</p>
                         </div>
                       ) : (
                         <p className="text-muted-foreground">No script available</p>
                       )}
                     </TabsContent>
                     
-                    <TabsContent value="scenes" className="space-y-4">
-                      {video.scenes && Array.isArray(video.scenes) ? (
+                    <TabsContent value="sections" className="space-y-4">
+                      {Array.isArray(job.sections) && job.sections.length ? (
                         <div className="space-y-4">
-                          {video.scenes.map((scene: any, index: number) => (
-                            <div key={index} className="border rounded-lg p-4">
+                          {job.sections.map((section: any, index: number) => (
+                            <div key={section.id || index} className="border rounded-lg p-4">
                               <div className="flex items-center justify-between mb-2">
-                                <h4 className="font-semibold">Scene {index + 1}</h4>
+                                <h4 className="font-semibold">Section {index + 1}: {section.title}</h4>
                                 <Badge variant="outline">
-                                  {scene.duration}s
+                                  {(section.target_seconds || 0)}s
                                 </Badge>
                               </div>
-                              <p className="text-sm text-muted-foreground mb-2">
-                                {scene.text}
-                              </p>
-                              <div className="bg-muted p-2 rounded text-xs">
-                                <span className="font-medium">Visual Prompt:</span> {scene.videoPrompt}
-                              </div>
+                              {section.script && (
+                                <p className="text-sm text-muted-foreground mb-2">
+                                  {section.script}
+                                </p>
+                              )}
+                              {section.shot_prompt && (
+                                <div className="bg-muted p-2 rounded text-xs">
+                                  <span className="font-medium">Visual Prompt:</span> {section.shot_prompt}
+                                </div>
+                              )}
                             </div>
                           ))}
                         </div>
                       ) : (
-                        <p className="text-muted-foreground">No scene breakdown available</p>
+                        <p className="text-muted-foreground">No sections available</p>
                       )}
                     </TabsContent>
                   </CardContent>
@@ -183,7 +189,7 @@ export default async function VideoDetailPage({ params }: { params: { id: string
                       Duration
                     </span>
                     <span className="font-medium">
-                      {video.duration ? formatDuration(video.duration) : 'N/A'}
+                      {computedDuration ? formatDuration(computedDuration) : 'N/A'}
                     </span>
                   </div>
 
@@ -193,7 +199,7 @@ export default async function VideoDetailPage({ params }: { params: { id: string
                       Style
                     </span>
                     <Badge variant="outline" className="capitalize">
-                      {video.style || 'Default'}
+                      Default
                     </Badge>
                   </div>
 
@@ -202,7 +208,7 @@ export default async function VideoDetailPage({ params }: { params: { id: string
                       <Eye className="w-4 h-4" />
                       Views
                     </span>
-                    <span className="font-medium">{video.view_count || 0}</span>
+                    <span className="font-medium">0</span>
                   </div>
 
                   <div className="flex items-center justify-between">
@@ -210,7 +216,7 @@ export default async function VideoDetailPage({ params }: { params: { id: string
                       <Download className="w-4 h-4" />
                       Downloads
                     </span>
-                    <span className="font-medium">{video.download_count || 0}</span>
+                    <span className="font-medium">0</span>
                   </div>
                 </CardContent>
               </Card>
@@ -224,10 +230,10 @@ export default async function VideoDetailPage({ params }: { params: { id: string
                   <div className="space-y-3">
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
-                        <Mic className={`w-4 h-4 ${video.has_voiceover ? 'text-green-600' : 'text-gray-400'}`} />
+                        <Mic className={`w-4 h-4 ${job.voiceover_url ? 'text-green-600' : 'text-gray-400'}`} />
                         <span className="text-sm">AI Voiceover</span>
                       </div>
-                      {video.has_voiceover ? (
+                      {job.voiceover_url ? (
                         <Badge className="bg-green-100 text-green-800">Active</Badge>
                       ) : (
                         <Badge variant="outline">Disabled</Badge>
@@ -236,22 +242,10 @@ export default async function VideoDetailPage({ params }: { params: { id: string
 
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
-                        <Type className={`w-4 h-4 ${video.has_captions ? 'text-green-600' : 'text-gray-400'}`} />
+                        <Type className={`w-4 h-4 ${Array.isArray(job.captions) && job.captions.length ? 'text-green-600' : 'text-gray-400'}`} />
                         <span className="text-sm">Auto Captions</span>
                       </div>
-                      {video.has_captions ? (
-                        <Badge className="bg-green-100 text-green-800">Active</Badge>
-                      ) : (
-                        <Badge variant="outline">Disabled</Badge>
-                      )}
-                    </div>
-
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <Music className={`w-4 h-4 ${video.has_music ? 'text-green-600' : 'text-gray-400'}`} />
-                        <span className="text-sm">Background Music</span>
-                      </div>
-                      {video.has_music ? (
+                      {Array.isArray(job.captions) && job.captions.length ? (
                         <Badge className="bg-green-100 text-green-800">Active</Badge>
                       ) : (
                         <Badge variant="outline">Disabled</Badge>
@@ -261,46 +255,15 @@ export default async function VideoDetailPage({ params }: { params: { id: string
                 </CardContent>
               </Card>
 
-              {/* Voice & Music Info */}
-              {(video.voice_type || video.music_type) && (
-                <Card>
-                  <CardHeader>
-                    <CardTitle>Audio Settings</CardTitle>
-                  </CardHeader>
-                  <CardContent className="space-y-3">
-                    {video.voice_type && (
-                      <div>
-                        <p className="text-sm text-muted-foreground mb-1">Voice Type</p>
-                        <Badge variant="secondary" className="capitalize">
-                          {video.voice_type}
-                        </Badge>
-                      </div>
-                    )}
-                    {video.music_type && (
-                      <div>
-                        <p className="text-sm text-muted-foreground mb-1">Music Type</p>
-                        <Badge variant="secondary" className="capitalize">
-                          {video.music_type}
-                        </Badge>
-                      </div>
-                    )}
-                  </CardContent>
-                </Card>
-              )}
-
               {/* Actions */}
               <Card>
                 <CardHeader>
                   <CardTitle>Actions</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-2">
-                  <Button className="w-full" variant="outline">
+                  <Button className="w-full" variant="outline" disabled>
                     <Edit className="w-4 h-4 mr-2" />
                     Edit Title
-                  </Button>
-                  <Button className="w-full" variant="outline">
-                    <Copy className="w-4 h-4 mr-2" />
-                    Duplicate Video
                   </Button>
                   <Link href="/dashboard/create" className="block">
                     <Button className="w-full bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700">

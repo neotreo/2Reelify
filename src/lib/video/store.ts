@@ -7,7 +7,7 @@ import { VideoJob } from '@/types/video';
 
 export async function insertJob(job: VideoJob) {
   const supabase = await createClient();
-  const { error } = await supabase.from('video_jobs').insert({
+  let payload: any = {
     id: job.id,
     user_id: job.user_id ?? null,
     idea: job.idea,
@@ -17,9 +17,20 @@ export async function insertJob(job: VideoJob) {
     captions: job.captions ?? null,
     video_url: job.video_url ?? null,
     error: job.error ?? null,
+    script_model: job.script_model ?? null,
+    video_model: job.video_model ?? null,
     created_at: job.created_at,
     updated_at: job.updated_at
-  });
+  };
+  let { error } = await supabase.from('video_jobs').insert(payload);
+  if (error && /script_model|video_model/i.test(error.message)) {
+    // Retry without new columns (schema cache not yet refreshed)
+    const fallback = { ...payload };
+    delete fallback.script_model;
+    delete fallback.video_model;
+    const retry = await supabase.from('video_jobs').insert(fallback);
+    error = retry.error ?? null;
+  }
   if (error) {
     console.error('insertJob error', {
       code: (error as any).code,

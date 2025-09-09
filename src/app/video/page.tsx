@@ -15,13 +15,15 @@ export default function VideoGeneratorPage() {
   const [jobId, setJobId] = useState<string | null>(null);
   const [job, setJob] = useState<Job | null>(null);
   const [loading, setLoading] = useState(false);
+  const [scriptModel, setScriptModel] = useState('gpt-4o-mini');
+  const [videoModel, setVideoModel] = useState('wan-video/wan-2.2-t2v-fast');
 
   async function submit() {
     setLoading(true);
     const res = await fetch('/api/video/create', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ idea })
+      body: JSON.stringify({ idea, scriptModel, videoModel })
     });
     const data = await res.json();
     setLoading(false);
@@ -63,6 +65,26 @@ export default function VideoGeneratorPage() {
         >
           {loading ? 'Starting...' : 'Generate'}
         </button>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
+        <label className="flex flex-col gap-1">
+          <span className="font-medium">Script Model</span>
+          <select className="border rounded px-2 py-1" value={scriptModel} disabled={!!jobId} onChange={e=>setScriptModel(e.target.value)}>
+            <option value="gpt-4o-mini">Fast (gpt-4o-mini)</option>
+            <option value="gpt-4-turbo-preview">Creative (gpt-4-turbo-preview)</option>
+            <option value="gpt-4o">Intelligent (gpt-4o)</option>
+          </select>
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="font-medium">Video Model</span>
+          <select className="border rounded px-2 py-1" value={videoModel} disabled={!!jobId} onChange={e=>setVideoModel(e.target.value)}>
+            <option value="wan-video/wan-2.2-t2v-fast">WAN 2.2 Fast (Speed: High | Skill: Medium | Price: $)</option>
+            <option value="bytedance/seedance-1-lite">Seedance 1 Lite (Speed: High | Skill: Medium+ | Price: $$)</option>
+            <option value="minimax/hailuo-02">Hailuo 02 (Speed: Medium | Skill: High for motion & coherence | Price: $$)</option>
+            <option value="kwaivgi/kling-v2.1">Kling v2.1 (Speed: Medium | Skill: High realism | Price: $$$)</option>
+            <option value="kwaivgi/kling-v2.1-master">Kling v2.1 Master (Speed: Low | Skill: Very High cinematic detail | Price: $$$$)</option>
+          </select>
+        </label>
       </div>
       {jobId && !job && <p className="text-sm text-muted-foreground">Creating job...</p>}
       {job && (

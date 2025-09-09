@@ -152,6 +152,8 @@ export type Database = {
           error: string | null
           id: string
           idea: string
+          script_model: string | null
+          video_model: string | null
           sections: Json
           status: string
           updated_at: string
@@ -166,6 +168,8 @@ export type Database = {
           error?: string | null
           id: string
           idea: string
+          script_model?: string | null
+          video_model?: string | null
           sections?: Json
           status: string
           updated_at?: string
@@ -180,6 +184,8 @@ export type Database = {
           error?: string | null
           id?: string
           idea?: string
+          script_model?: string | null
+          video_model?: string | null
           sections?: Json
           status?: string
           updated_at?: string

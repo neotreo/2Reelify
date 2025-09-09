@@ -4,12 +4,20 @@ import { VideoJob, VideoSection } from '@/types/video';
 import { insertJob, updateJob, getJob } from './store';
 import { generateVoiceover as ttsGenerateVoiceover, generateCaptions as whisperGenerateCaptions, generateVideoClip, processAndCombineVideos } from '@/lib/ai-services';
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+let _openai: OpenAI | null = null;
+function getOpenAI(): OpenAI {
+  if (!_openai) {
+    const key = process.env.OPENAI_API_KEY;
+    if (!key) throw new Error('OPENAI_API_KEY not set');
+    _openai = new OpenAI({ apiKey: key });
+  }
+  return _openai;
+}
 
-async function structuredJSON<T>(prompt: string, schemaName: string, schema: any): Promise<T> {
+async function structuredJSON<T>(prompt: string, schemaName: string, schema: any, model?: string): Promise<T> {
   const schemaText = JSON.stringify(schema, null, 2);
-  const res = await openai.chat.completions.create({
-    model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+  const res = await getOpenAI().chat.completions.create({
+    model: model || process.env.OPENAI_MODEL || 'gpt-4o-mini',
     messages: [
       {
         role: 'system',
@@ -30,31 +38,27 @@ async function structuredJSON<T>(prompt: string, schemaName: string, schema: any
   }
 }
 
-export async function createVideoJob(idea: string, userId?: string | null): Promise<VideoJob> {
+export async function createVideoJob(idea: string, userId?: string | null, opts?: { scriptModel?: string; videoModel?: string }): Promise<VideoJob> {
   const job: VideoJob = {
     id: randomUUID(),
     user_id: userId,
     idea,
     status: 'planning',
     sections: [],
+    script_model: opts?.scriptModel || null,
+    video_model: opts?.videoModel || null,
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString()
   };
   await insertJob(job);
-  
-  // Use setTimeout instead of queueMicrotask for better error handling
   setTimeout(async () => {
     try {
       await runPipeline(job.id);
     } catch (err) {
       console.error('Pipeline error:', err);
-      await updateJob(job.id, { 
-        status: 'error', 
-        error: err instanceof Error ? err.message : 'Unknown error' 
-      });
+      await updateJob(job.id, { status: 'error', error: err instanceof Error ? err.message : 'Unknown error' });
     }
   }, 100);
-  
   return job;
 }
 
@@ -123,7 +127,8 @@ async function plan(job: VideoJob): Promise<VideoJob> {
         }
       },
       required: ['sections']
-    }
+    },
+    job.script_model || undefined
   );
   
   const sections: VideoSection[] = data.sections.map(s => ({
@@ -185,7 +190,8 @@ async function script(job: VideoJob): Promise<VideoJob> {
         }
       },
       required: ['sections']
-    }
+    },
+    job.script_model || undefined
   );
   
   const scriptMap = new Map(job.sections.map(s => [s.id, '']));
@@ -250,7 +256,8 @@ async function prompts(job: VideoJob): Promise<VideoJob> {
         }
       },
       required: ['prompts']
-    }
+    },
+    job.script_model || undefined
   );
   
   const promptMap = new Map(data.prompts.map(p => [p.id, p.shotPrompt]));
@@ -276,18 +283,19 @@ async function generateClips(job: VideoJob): Promise<VideoJob> {
       const duration = Math.min(Math.max(section.target_seconds || 5, 2), 12);
       const prompt = section.shot_prompt || `Cinematic vertical video illustrating: ${section.objective}`;
       const clipUrl = await generateVideoClip({
-        prompt,
-        duration,
+        prompt: prompt,
+        duration: duration,
         style: 'cinematic',
-        aspectRatio: '9:16'
+        aspectRatio: '9:16',
+        modelId: job.video_model || undefined
       });
       section.clip_id = randomUUID();
       section.clip_url = clipUrl;
-  delete (section as any).clip_error;
+      delete (section as any).clip_error;
     } catch (err) {
       console.error('Clip generation failed for section', section.id, err);
       // Leave clip_url undefined; pipeline can still proceed (or fail later in stitch)
-  section.clip_error = err instanceof Error ? err.message : 'clip_failed';
+      section.clip_error = err instanceof Error ? err.message : 'clip_failed';
     }
     // Persist progress after each section to allow UI polling
     await updateJob(job.id, { sections });
@@ -338,8 +346,7 @@ async function stitch(job: VideoJob): Promise<VideoJob> {
       videoClips: clipUrls,
       audioUrl: job.voiceover_url || undefined,
       captions: job.captions || undefined,
-  durations: job.sections.map(s => s.target_seconds || 5),
-  captionStyle: job.voice_id || undefined
+      captionStyle: job.voice_id || undefined
     });
     return await updateJob(job.id, { video_url: finalUrl });
   } catch (err) {

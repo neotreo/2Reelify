@@ -86,6 +86,8 @@ export default function CreateVideoPage() {
   const [includeVoiceover, setIncludeVoiceover] = useState(true);
   const [includeCaptions, setIncludeCaptions] = useState(true);
   const [includeMusic, setIncludeMusic] = useState(true);
+  const [scriptModel, setScriptModel] = useState("gpt-4o-mini");
+  const [videoModel, setVideoModel] = useState("wan-video/wan-2.2-t2v-fast");
   const [project, setProject] = useState<VideoProject>({
     status: "idle",
     progress: 0,
@@ -166,6 +168,8 @@ export default function CreateVideoPage() {
       formData.append("includeVoiceover", includeVoiceover.toString());
       formData.append("includeCaptions", includeCaptions.toString());
       formData.append("includeMusic", includeMusic.toString());
+      formData.append("scriptModel", scriptModel);
+      formData.append("videoModel", videoModel);
 
       // Start background job
       const res = await startVideoJobAction(formData);
@@ -223,8 +227,8 @@ export default function CreateVideoPage() {
           status: pStatus,
           progress,
           script: combinedScript || prev.script,
-          videoUrl: res.job.video_url || prev.videoUrl,
-          error: res.job.error || undefined,
+          videoUrl: res.job?.video_url || prev.videoUrl,
+          error: res.job?.error || undefined,
           metadata: prev.metadata ?? {
             duration: videoDuration[0],
             style: videoStyle,
@@ -393,6 +397,38 @@ export default function CreateVideoPage() {
                           <span>30s</span>
                           <span>45s</span>
                           <span>60s</span>
+                        </div>
+                      </div>
+
+                      {/* Models */}
+                      <div className="grid md:grid-cols-2 gap-4 pt-2">
+                        <div className="space-y-2">
+                          <Label>Script Model</Label>
+                          <Select value={scriptModel} onValueChange={setScriptModel} disabled={project.status !== "idle"}>
+                            <SelectTrigger>
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="gpt-4o-mini">Fast (gpt-4o-mini)</SelectItem>
+                              <SelectItem value="gpt-4-turbo-preview">Creative (gpt-4-turbo-preview)</SelectItem>
+                              <SelectItem value="gpt-4o">Intelligent (gpt-4o)</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div className="space-y-2">
+                          <Label>Video Model</Label>
+                          <Select value={videoModel} onValueChange={setVideoModel} disabled={project.status !== "idle"}>
+                            <SelectTrigger>
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="wan-video/wan-2.2-t2v-fast">WAN 2.2 Fast</SelectItem>
+                              <SelectItem value="bytedance/seedance-1-lite">Seedance 1 Lite</SelectItem>
+                              <SelectItem value="minimax/hailuo-02">Hailuo 02</SelectItem>
+                              <SelectItem value="kwaivgi/kling-v2.1">Kling v2.1</SelectItem>
+                              <SelectItem value="kwaivgi/kling-v2.1-master">Kling v2.1 Master</SelectItem>
+                            </SelectContent>
+                          </Select>
                         </div>
                       </div>
                     </TabsContent>
