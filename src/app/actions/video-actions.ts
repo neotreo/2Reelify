@@ -7,6 +7,7 @@ import {
   generateVideoClip,
   generateVoiceover as ttsVoiceover,
   generateCaptions as whisperCaptions,
+  processAndCombineVideos,
   VIDEO_STYLES,
 } from "@/lib/ai-services";
 import { createVideoJob } from "@/lib/video/orchestrator";
@@ -50,7 +51,10 @@ export async function startVideoJobAction(
     const videoModel = (formData.get("videoModel") as string) || undefined;
 
     // Kick off background pipeline
-    const job = await createVideoJob(idea, user.id, { scriptModel, videoModel });
+    const job = await createVideoJob(idea, user.id, {
+      scriptModel,
+      videoModel,
+    });
     return { jobId: job.id };
   } catch (e: any) {
     const msg = e?.message || (typeof e === "string" ? e : JSON.stringify(e));
@@ -137,8 +141,8 @@ export async function generateVideoAction(
     const includeCaptions = formData.get("includeCaptions") === "true";
     const includeMusic = formData.get("includeMusic") === "true";
 
-  const isTrial = !subscription;
-  const videoModel = (formData.get('videoModel') as string) || undefined;
+    const isTrial = !subscription;
+    const videoModel = (formData.get("videoModel") as string) || undefined;
     const duration = isTrial
       ? Math.min(
           Number.isFinite(requestedDuration) ? requestedDuration : 30,
@@ -159,7 +163,11 @@ export async function generateVideoAction(
     }
 
     // Step 2: Generate video clips for each scene
-  const videoClips = await generateVideoClips(scriptData.scenes, style, videoModel);
+    const videoClips = await generateVideoClips(
+      scriptData.scenes,
+      style,
+      videoModel,
+    );
     if (!videoClips || videoClips.length === 0) {
       return { error: "Failed to generate video clips" };
     }
@@ -300,8 +308,22 @@ async function processVideo(params: {
   duration: number;
 }): Promise<string | undefined> {
   try {
-    // For now still placeholder; integrate Shotstack / processing later
-    return params.clips[0] || undefined;
+    const caps =
+      params.includeCaptions && params.voiceoverUrl
+        ? await whisperCaptions(params.voiceoverUrl)
+        : undefined;
+    const url = await processAndCombineVideos({
+      videoClips: params.clips,
+      audioUrl: params.voiceoverUrl,
+      captions: caps,
+      durations: Array.isArray(params.scenes)
+        ? params.scenes.map((s) =>
+            Math.max(1, Math.min(14, Number(s.duration) || 5)),
+          )
+        : undefined,
+      captionStyle: params.style,
+    });
+    return url;
   } catch (error) {
     console.error("Video processing error:", error);
     return undefined;
@@ -321,10 +343,10 @@ export async function getUserVideos() {
 
   // Fetch from video_jobs instead of videos and map to UI shape
   const { data: jobs, error } = await supabase
-    .from('video_jobs')
-    .select('id, idea, status, video_url, voiceover_url, captions, created_at')
-    .eq('user_id', user.id)
-    .order('created_at', { ascending: false });
+    .from("video_jobs")
+    .select("id, idea, status, video_url, voiceover_url, captions, created_at")
+    .eq("user_id", user.id)
+    .order("created_at", { ascending: false });
 
   if (error) {
     return { error: error.message, videos: [] };
@@ -332,13 +354,14 @@ export async function getUserVideos() {
 
   const videos = (jobs || []).map((j: any) => ({
     id: j.id,
-    title: (j.idea || 'Untitled').slice(0, 100),
+    title: (j.idea || "Untitled").slice(0, 100),
     description: j.idea || undefined,
     video_url: j.video_url || undefined,
     thumbnail_url: undefined,
-    duration: Array.isArray(j.captions) && j.captions.length
-      ? Math.round((j.captions[j.captions.length - 1].end || 0))
-      : undefined,
+    duration:
+      Array.isArray(j.captions) && j.captions.length
+        ? Math.round(j.captions[j.captions.length - 1].end || 0)
+        : undefined,
     style: undefined,
     status: j.status,
     view_count: 0,
@@ -363,10 +386,10 @@ export async function deleteVideo(videoId: string) {
   }
 
   const { error } = await supabase
-    .from('video_jobs')
+    .from("video_jobs")
     .delete()
-    .eq('id', videoId)
-    .eq('user_id', user.id);
+    .eq("id", videoId)
+    .eq("user_id", user.id);
 
   if (error) {
     return { error: error.message };

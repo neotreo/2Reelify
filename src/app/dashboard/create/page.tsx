@@ -86,7 +86,7 @@ export default function CreateVideoPage() {
   const [includeVoiceover, setIncludeVoiceover] = useState(true);
   const [includeCaptions, setIncludeCaptions] = useState(true);
   const [includeMusic, setIncludeMusic] = useState(true);
-  const [scriptModel, setScriptModel] = useState("gpt-4o-mini");
+  const [scriptModel, setScriptModel] = useState("gpt-5-mini");
   const [videoModel, setVideoModel] = useState("wan-video/wan-2.2-t2v-fast");
   const [project, setProject] = useState<VideoProject>({
     status: "idle",
@@ -114,6 +114,7 @@ export default function CreateVideoPage() {
   > = {
     queued: "planning",
     planning: "planning",
+    drafting: "scripting",
     scripting: "scripting",
     prompting: "generating",
     generating_clips: "generating",
@@ -130,6 +131,8 @@ export default function CreateVideoPage() {
         return 5;
       case "planning":
         return 10;
+      case "drafting":
+        return 20;
       case "scripting":
         return 30;
       case "prompting":
@@ -409,9 +412,9 @@ export default function CreateVideoPage() {
                               <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
-                              <SelectItem value="gpt-4o-mini">Fast (gpt-4o-mini)</SelectItem>
+                              <SelectItem value="gpt-5-mini">Fast (gpt-5-mini)</SelectItem>
                               <SelectItem value="gpt-4-turbo-preview">Creative (gpt-4-turbo-preview)</SelectItem>
-                              <SelectItem value="gpt-4o">Intelligent (gpt-4o)</SelectItem>
+                              <SelectItem value="gpt-5">Intelligent (gpt-5)</SelectItem>
                             </SelectContent>
                           </Select>
                         </div>

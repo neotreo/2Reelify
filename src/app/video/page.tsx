@@ -15,7 +15,7 @@ export default function VideoGeneratorPage() {
   const [jobId, setJobId] = useState<string | null>(null);
   const [job, setJob] = useState<Job | null>(null);
   const [loading, setLoading] = useState(false);
-  const [scriptModel, setScriptModel] = useState('gpt-4o-mini');
+  const [scriptModel, setScriptModel] = useState('gpt-5-mini');
   const [videoModel, setVideoModel] = useState('wan-video/wan-2.2-t2v-fast');
 
   async function submit() {
@@ -70,9 +70,9 @@ export default function VideoGeneratorPage() {
         <label className="flex flex-col gap-1">
           <span className="font-medium">Script Model</span>
           <select className="border rounded px-2 py-1" value={scriptModel} disabled={!!jobId} onChange={e=>setScriptModel(e.target.value)}>
-            <option value="gpt-4o-mini">Fast (gpt-4o-mini)</option>
+            <option value="gpt-5-mini">Fast (gpt-5-mini)</option>
             <option value="gpt-4-turbo-preview">Creative (gpt-4-turbo-preview)</option>
-            <option value="gpt-4o">Intelligent (gpt-4o)</option>
+            <option value="gpt-5">Intelligent (gpt-5)</option>
           </select>
         </label>
         <label className="flex flex-col gap-1">

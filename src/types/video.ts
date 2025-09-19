@@ -10,6 +10,8 @@ export type VideoSection = {
   start_time?: number;
   end_time?: number;
   clip_error?: string;
+  draft_narration?: string;
+  draft_visual?: string;
 };
 
 export type CaptionSegment = { start: number; end: number; text: string };
@@ -17,6 +19,7 @@ export type CaptionSegment = { start: number; end: number; text: string };
 export type VideoJobStatus =
   | 'queued'
   | 'planning'
+  | 'drafting'
   | 'scripting'
   | 'prompting'
   | 'generating_clips'
@@ -37,8 +40,9 @@ export interface VideoJob {
   captions?: CaptionSegment[];
   video_url?: string | null;
   error?: string | null;
+  draft_url?: string | null;
   // New customization fields
-  script_model?: string | null; // e.g. gpt-4o-mini | gpt-4o | gpt-4-turbo-preview
+  script_model?: string | null; // e.g. gpt-5-mini | gpt-5 | gpt-4-turbo-preview
   video_model?: string | null;  // e.g. wan-video/wan-2.2-t2v-fast | bytedance/seedance-1-lite | minimax/hailuo-02 | kwaivgi/kling-v2.1 | kwaivgi/kling-v2.1-master
   created_at: string;
   updated_at: string;
