@@ -50,6 +50,7 @@ import {
 import VideoPlayer from "@/components/video-player";
 import { useRouter } from "next/navigation";
 import type { VideoJob, VideoJobStatus } from "@/types/video";
+import { VideoEditorModal } from "@/components/video-editor/video-editor-modal";
 
 interface VideoProject {
   id?: string;
@@ -100,6 +101,9 @@ export default function CreateVideoPage() {
   const [jobId, setJobId] = useState<string | null>(null);
   const [job, setJob] = useState<VideoJob | null>(null);
   const pollRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Video editor state
+  const [isEditorOpen, setIsEditorOpen] = useState(false);
 
   const statusMessages = {
     idle: "Ready to create your video",
@@ -173,6 +177,13 @@ export default function CreateVideoPage() {
       }
     } catch (error) {
       console.error("handleStopGeneration error:", error);
+    }
+  };
+
+  const handleSectionsUpdate = (newSections: VideoJob["sections"]) => {
+    // Update the local job state with new section order
+    if (job) {
+      setJob({ ...job, sections: newSections });
     }
   };
 
@@ -265,6 +276,11 @@ export default function CreateVideoPage() {
           },
         }));
 
+        // Auto-open editor when sections start appearing (planning complete)
+        if (res.job.sections && res.job.sections.length > 0 && !isEditorOpen) {
+          setIsEditorOpen(true);
+        }
+
         if (res.job?.status === "complete" || res.job?.status === "error" || res.job?.status === "cancelled") {
           if (pollRef.current) clearInterval(pollRef.current);
           pollRef.current = null;
@@ -291,6 +307,7 @@ export default function CreateVideoPage() {
     setIdea("");
     setJobId(null);
     setJob(null);
+    setIsEditorOpen(false);
     if (pollRef.current) {
       clearInterval(pollRef.current);
       pollRef.current = null;
@@ -315,6 +332,15 @@ export default function CreateVideoPage() {
   return (
     <>
       <DashboardNavbar />
+      
+      {/* Video Editor Modal */}
+      <VideoEditorModal
+        isOpen={isEditorOpen}
+        onClose={() => setIsEditorOpen(false)}
+        job={job}
+        onSectionsUpdate={handleSectionsUpdate}
+      />
+      
       <div className="container mx-auto px-4 py-8">
         <div className="max-w-7xl mx-auto">
           {/* Header */}
