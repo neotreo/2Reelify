@@ -40,10 +40,12 @@ import {
   Music,
   Palette,
   Clock,
+  StopCircle,
 } from "lucide-react";
 import {
   startVideoJobAction,
   getVideoJobAction,
+  cancelVideoJobAction,
 } from "@/app/actions/video-actions";
 import VideoPlayer from "@/components/video-player";
 import { useRouter } from "next/navigation";
@@ -58,7 +60,8 @@ interface VideoProject {
     | "generating"
     | "processing"
     | "complete"
-    | "error";
+    | "error"
+    | "cancelled";
   progress: number;
   script?: string;
   scenes?: Array<{
@@ -106,6 +109,7 @@ export default function CreateVideoPage() {
     processing: "Adding voiceover and captions...",
     complete: "Your video is ready!",
     error: "Something went wrong",
+    cancelled: "Generation stopped",
   } as const;
 
   const jobStatusToProjectStatus: Record<
@@ -123,6 +127,7 @@ export default function CreateVideoPage() {
     stitching: "processing",
     complete: "complete",
     error: "error",
+    cancelled: "error",
   };
 
   function jobStatusToProgress(status: VideoJobStatus): number {
@@ -147,11 +152,29 @@ export default function CreateVideoPage() {
         return 95;
       case "complete":
         return 100;
+      case "cancelled":
+        return 0;
       case "error":
       default:
         return 0;
     }
   }
+
+  const handleStopGeneration = async () => {
+    if (!jobId) return;
+
+    try {
+      const res = await cancelVideoJobAction(jobId);
+      if (res?.error) {
+        console.error("Failed to stop generation:", res.error);
+      } else {
+        // The polling will pick up the cancelled status
+        console.log("Generation stopped successfully");
+      }
+    } catch (error) {
+      console.error("handleStopGeneration error:", error);
+    }
+  };
 
   const handleGenerateVideo = async () => {
     if (!idea.trim()) return;
@@ -231,7 +254,9 @@ export default function CreateVideoPage() {
           progress,
           script: combinedScript || prev.script,
           videoUrl: res.job?.video_url || prev.videoUrl,
-          error: res.job?.error || undefined,
+          error: res.job?.status === "cancelled" 
+            ? "Video generation was stopped" 
+            : (res.job?.error || undefined),
           metadata: prev.metadata ?? {
             duration: videoDuration[0],
             style: videoStyle,
@@ -240,7 +265,7 @@ export default function CreateVideoPage() {
           },
         }));
 
-        if (res.job.status === "complete" || res.job.status === "error") {
+        if (res.job?.status === "complete" || res.job?.status === "error" || res.job?.status === "cancelled") {
           if (pollRef.current) clearInterval(pollRef.current);
           pollRef.current = null;
         }
@@ -560,7 +585,7 @@ export default function CreateVideoPage() {
                       Download Video
                     </Button>
                   </>
-                ) : project.status === "error" ? (
+                ) : project.status === "error" || project.status === "cancelled" ? (
                   <Button
                     onClick={resetProject}
                     variant="outline"
@@ -571,10 +596,20 @@ export default function CreateVideoPage() {
                     Try Again
                   </Button>
                 ) : (
-                  <Button disabled size="lg" className="flex-1">
-                    <Loader2 className="mr-2 w-5 h-5 animate-spin" />
-                    {statusMessages[project.status]}
-                  </Button>
+                  <>
+                    <Button disabled size="lg" className="flex-1">
+                      <Loader2 className="mr-2 w-5 h-5 animate-spin" />
+                      {statusMessages[project.status]}
+                    </Button>
+                    <Button
+                      onClick={handleStopGeneration}
+                      variant="destructive"
+                      size="lg"
+                    >
+                      <StopCircle className="mr-2 w-5 h-5" />
+                      Stop
+                    </Button>
+                  </>
                 )}
               </div>
             </div>
@@ -590,6 +625,11 @@ export default function CreateVideoPage() {
                         <>
                           <CheckCircle className="w-5 h-5 text-green-600" />
                           Complete!
+                        </>
+                      ) : project.status === "cancelled" ? (
+                        <>
+                          <StopCircle className="w-5 h-5 text-orange-600" />
+                          Stopped
                         </>
                       ) : project.status === "error" ? (
                         <>

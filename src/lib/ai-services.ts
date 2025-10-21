@@ -196,9 +196,17 @@ export async function generateVideoClip(
   // Hailuo 02
   if (!isSeedance && isHailuo) {
     try {
+      // Hailuo only accepts duration of 6 or 10 seconds
+      let hailuoDuration = params.duration || 6;
+      // Round to nearest valid duration (6 or 10)
+      if (hailuoDuration <= 8) {
+        hailuoDuration = 6;
+      } else {
+        hailuoDuration = 10;
+      }
       const input: any = {
         prompt: optimizeVideoPrompt(params.prompt),
-        duration: Math.max(2, Math.min(14, Math.round(params.duration || 6))),
+        duration: hailuoDuration,
         resolution: '1080p',
         aspect_ratio: params.aspectRatio,
         prompt_optimizer: false

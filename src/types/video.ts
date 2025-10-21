@@ -27,7 +27,8 @@ export type VideoJobStatus =
   | 'captions'
   | 'stitching'
   | 'complete'
-  | 'error';
+  | 'error'
+  | 'cancelled';
 
 export interface VideoJob {
   id: string;

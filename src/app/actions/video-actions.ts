@@ -83,6 +83,38 @@ export async function getVideoJobAction(
   }
 }
 
+// Cancel a running video job
+export async function cancelVideoJobAction(
+  jobId: string,
+): Promise<{ success?: boolean; error?: string }> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return { error: "Not authenticated" };
+
+  try {
+    const job = await getJob(jobId);
+    if (job.user_id && job.user_id !== user.id) return { error: "Forbidden" };
+    
+    // Only allow cancellation if job is still in progress
+    if (job.status === "complete" || job.status === "error" || job.status === "cancelled") {
+      return { error: "Cannot cancel a job that has already finished" };
+    }
+
+    // Update job status to cancelled
+    await supabase
+      .from("video_jobs")
+      .update({ status: "cancelled", updated_at: new Date().toISOString() })
+      .eq("id", jobId);
+
+    return { success: true };
+  } catch (e) {
+    console.error("cancelVideoJobAction error:", e);
+    return { error: "Failed to cancel job" };
+  }
+}
+
 // Main video generation action (legacy synchronous flow - unused in new create screen)
 export async function generateVideoAction(
   formData: FormData,

@@ -187,29 +187,57 @@ export async function createVideoJob(
   return job;
 }
 
+// Helper to check if job has been cancelled
+async function checkCancellation(jobId: string): Promise<void> {
+  const job = await getJob(jobId);
+  if (job.status === "cancelled") {
+    throw new Error("Video generation cancelled by user");
+  }
+}
+
 async function runPipeline(jobId: string) {
   let job = await getJob(jobId);
   try {
-  job = normalizeJob(job);
+    job = normalizeJob(job);
+    await checkCancellation(jobId);
     job = await plan(job);
-  job = normalizeJob(job);
+    
+    job = normalizeJob(job);
+    await checkCancellation(jobId);
     job = await draft(job);
-  job = normalizeJob(job);
+    
+    job = normalizeJob(job);
+    await checkCancellation(jobId);
     job = await script(job);
-  job = normalizeJob(job);
+    
+    job = normalizeJob(job);
+    await checkCancellation(jobId);
     job = await prompts(job);
-  job = normalizeJob(job);
+    
+    job = normalizeJob(job);
+    await checkCancellation(jobId);
     job = await generateClips(job);
+    
+    await checkCancellation(jobId);
     job = await generateVoiceover(job);
+    
+    await checkCancellation(jobId);
     job = await generateCaptions(job);
+    
+    await checkCancellation(jobId);
     job = await stitch(job);
+    
     await updateJob(job.id, { status: "complete" });
   } catch (e: any) {
     console.error("Pipeline error:", e);
-    await updateJob(job.id, {
-      status: "error",
-      error: e?.message || "Pipeline failed",
-    });
+    // If it was cancelled, don't overwrite the status
+    const currentJob = await getJob(jobId);
+    if (currentJob.status !== "cancelled") {
+      await updateJob(job.id, {
+        status: "error",
+        error: e?.message || "Pipeline failed",
+      });
+    }
     throw e;
   }
 }
