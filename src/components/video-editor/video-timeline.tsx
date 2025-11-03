@@ -3,6 +3,9 @@
 import { useState } from "react";
 import { VideoSection, CaptionSegment } from "@/types/video";
 import { TimelineClip } from "./timeline-clip";
+import { AudioWaveform } from "./audio-waveform";
+import { CaptionTimeline } from "./caption-timeline";
+import { Badge } from "@/components/ui/badge";
 import { Video, Mic, Type } from "lucide-react";
 
 interface VideoTimelineProps {
@@ -11,6 +14,10 @@ interface VideoTimelineProps {
   captions?: CaptionSegment[];
   onSectionsReorder: (sections: VideoSection[]) => void;
   onSectionDelete: (sectionId: string) => void;
+  selectedSectionId?: string;
+  onSectionSelect?: (section: VideoSection) => void;
+  currentTime?: number;
+  totalDuration?: number;
 }
 
 export function VideoTimeline({
@@ -19,8 +26,11 @@ export function VideoTimeline({
   captions,
   onSectionsReorder,
   onSectionDelete,
+  selectedSectionId,
+  onSectionSelect,
+  currentTime = 0,
+  totalDuration = 0,
 }: VideoTimelineProps) {
-  const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
 
   const handleDragStart = (index: number) => (e: React.DragEvent) => {
@@ -50,15 +60,20 @@ export function VideoTimeline({
 
   const handleDelete = (sectionId: string) => {
     onSectionDelete(sectionId);
-    if (selectedClipId === sectionId) {
-      setSelectedClipId(null);
+  };
+
+  const handleSelect = (section: VideoSection) => {
+    if (onSectionSelect) {
+      onSectionSelect(section);
     }
   };
 
-  const totalDuration = sections.reduce(
+  const calculatedDuration = sections.reduce(
     (sum, s) => sum + (s.target_seconds || 5),
     0
   );
+
+  const finalDuration = totalDuration || calculatedDuration;
 
   const audioWidth = sections.reduce(
     (sum, s) => sum + Math.max((s.target_seconds || 5) * 40, 80),
@@ -66,109 +81,85 @@ export function VideoTimeline({
   );
 
   return (
-    <div className="flex flex-col gap-4 p-4 bg-gray-50 rounded-lg border border-gray-200">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <div className="text-sm font-medium text-gray-700">
-            Video Timeline
-          </div>
-          <div className="text-xs text-gray-500">
-            {sections.length} clips • {totalDuration}s total
-          </div>
+    <div className="flex flex-col gap-6">
+      {/* Timeline Info Bar */}
+      <div className="flex items-center justify-between px-2">
+        <div className="flex items-center gap-3 text-sm text-gray-600">
+          <span className="font-medium text-gray-900">{sections.length} clips</span>
+          <span>•</span>
+          <span>{finalDuration}s total duration</span>
         </div>
-        <div className="text-xs text-gray-500">
-          Drag clips to reorder • Click to select • Hover to delete
+        <div className="flex items-center gap-2 text-xs text-gray-500">
+          <span>0s</span>
+          <div className="w-24 h-0.5 bg-gray-300"></div>
+          <span>{finalDuration}s</span>
         </div>
       </div>
 
+      {/* Video Clips Track */}
       <div className="flex flex-col gap-3">
-        <div className="flex flex-col gap-2">
-          <div className="flex items-center gap-2 text-sm font-medium text-gray-700">
-            <Video className="w-4 h-4 text-purple-600" />
-            Video Clips
-          </div>
-          <div className="relative">
-            <div className="flex gap-2 overflow-x-auto pb-2">
-              {sections.length === 0 ? (
-                <div className="flex items-center justify-center w-full h-16 text-sm text-gray-400 border-2 border-dashed border-gray-300 rounded-md">
-                  No clips yet - waiting for generation...
-                </div>
-              ) : (
-                sections.map((section, index) => (
-                  <TimelineClip
-                    key={section.id}
-                    section={section}
-                    index={index}
-                    isSelected={selectedClipId === section.id}
-                    onSelect={() => setSelectedClipId(section.id)}
-                    onDelete={() => handleDelete(section.id)}
-                    onDragStart={handleDragStart(index)}
-                    onDragOver={handleDragOver(index)}
-                    onDrop={handleDrop(index)}
-                  />
-                ))
-              )}
-            </div>
-          </div>
+        <div className="flex items-center gap-2">
+          <Video className="w-5 h-5 text-purple-600" />
+          <span className="text-sm font-semibold text-gray-900">Video Clips</span>
         </div>
-
-        <div className="flex flex-col gap-2">
-          <div className="flex items-center gap-2 text-sm font-medium text-gray-700">
-            <Mic className="w-4 h-4 text-blue-600" />
-            Voiceover
-          </div>
-          <div className="relative h-12 bg-white border border-gray-200 rounded-md overflow-hidden">
-            {voiceoverUrl ? (
-              <div
-                className="h-full bg-gradient-to-r from-blue-100 to-blue-200 border-l-4 border-blue-500 flex items-center px-3"
-                style={{ width: `${audioWidth}px` }}
-              >
-                <span className="text-xs font-medium text-blue-700">
-                  Audio Track ({totalDuration}s)
-                </span>
+        <div className="relative bg-gradient-to-r from-purple-50 to-blue-50 rounded-lg p-4 border border-purple-200">
+          <div className="flex gap-3 overflow-x-auto pb-2">
+            {sections.length === 0 ? (
+              <div className="flex items-center justify-center w-full h-20 text-sm text-gray-500 border-2 border-dashed border-gray-300 rounded-lg bg-white/50">
+                No clips yet - waiting for generation...
               </div>
             ) : (
-              <div className="flex items-center justify-center h-full text-xs text-gray-400">
-                {sections.length > 0
-                  ? "Generating voiceover..."
-                  : "Waiting for clips..."}
-              </div>
-            )}
-          </div>
-        </div>
-
-        <div className="flex flex-col gap-2">
-          <div className="flex items-center gap-2 text-sm font-medium text-gray-700">
-            <Type className="w-4 h-4 text-green-600" />
-            Captions
-          </div>
-          <div className="relative h-12 bg-white border border-gray-200 rounded-md overflow-hidden">
-            {captions && captions.length > 0 ? (
-              <div
-                className="h-full bg-gradient-to-r from-green-100 to-green-200 border-l-4 border-green-500 flex items-center px-3"
-                style={{ width: `${audioWidth}px` }}
-              >
-                <span className="text-xs font-medium text-green-700">
-                  {captions.length} caption segments
-                </span>
-              </div>
-            ) : (
-              <div className="flex items-center justify-center h-full text-xs text-gray-400">
-                {voiceoverUrl
-                  ? "Generating captions..."
-                  : sections.length > 0
-                  ? "Waiting for voiceover..."
-                  : "Waiting for clips..."}
-              </div>
+              sections.map((section, index) => (
+                <TimelineClip
+                  key={section.id}
+                  section={section}
+                  index={index}
+                  isSelected={selectedSectionId === section.id}
+                  onSelect={() => handleSelect(section)}
+                  onDelete={() => handleDelete(section.id)}
+                  onDragStart={handleDragStart(index)}
+                  onDragOver={handleDragOver(index)}
+                  onDrop={handleDrop(index)}
+                />
+              ))
             )}
           </div>
         </div>
       </div>
 
-      <div className="flex items-center gap-2 pt-2 border-t border-gray-200">
-        <div className="text-xs text-gray-400">0s</div>
-        <div className="flex-1 h-px bg-gray-300"></div>
-        <div className="text-xs text-gray-400">{totalDuration}s</div>
+      {/* Voiceover Audio Track */}
+      <div className="flex flex-col gap-3">
+        <div className="flex items-center gap-2">
+          <Mic className="w-5 h-5 text-blue-600" />
+          <span className="text-sm font-semibold text-gray-900">Voiceover Audio</span>
+        </div>
+        <div className="bg-blue-50 rounded-lg p-4 border border-blue-200">
+          <AudioWaveform
+            audioUrl={voiceoverUrl || undefined}
+            width={Math.max(audioWidth, 400)}
+            height={48}
+            currentTime={currentTime}
+            duration={finalDuration}
+          />
+        </div>
+      </div>
+
+      {/* Captions Track */}
+      <div className="flex flex-col gap-3">
+        <div className="flex items-center gap-2">
+          <Type className="w-5 h-5 text-green-600" />
+          <span className="text-sm font-semibold text-gray-900">Captions</span>
+          <Badge variant="outline" className="text-xs">{captions?.length || 0} segments</Badge>
+        </div>
+        <div className="bg-green-50 rounded-lg p-4 border border-green-200">
+          <CaptionTimeline
+            captions={captions || []}
+            totalDuration={finalDuration}
+            width={Math.max(audioWidth, 400)}
+            height={48}
+            currentTime={currentTime}
+          />
+        </div>
       </div>
     </div>
   );

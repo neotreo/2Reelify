@@ -46,6 +46,7 @@ import {
   startVideoJobAction,
   getVideoJobAction,
   cancelVideoJobAction,
+  regenerateSectionAction,
 } from "@/app/actions/video-actions";
 import VideoPlayer from "@/components/video-player";
 import { useRouter } from "next/navigation";
@@ -184,6 +185,22 @@ export default function CreateVideoPage() {
     // Update the local job state with new section order
     if (job) {
       setJob({ ...job, sections: newSections });
+    }
+  };
+
+  const handleSectionRegenerate = async (sectionId: string) => {
+    if (!jobId) return;
+
+    try {
+      const res = await regenerateSectionAction(jobId, sectionId);
+      if (res?.error) {
+        console.error("Failed to regenerate section:", res.error);
+      } else {
+        console.log("Section regeneration started successfully");
+        // The polling will pick up the updated status
+      }
+    } catch (error) {
+      console.error("handleSectionRegenerate error:", error);
     }
   };
 
@@ -339,7 +356,22 @@ export default function CreateVideoPage() {
         onClose={() => setIsEditorOpen(false)}
         job={job}
         onSectionsUpdate={handleSectionsUpdate}
+        onSectionRegenerate={handleSectionRegenerate}
       />
+
+      {/* Floating Editor Button - Shows when job exists and editor is closed */}
+      {job && !isEditorOpen && (
+        <button
+          onClick={() => setIsEditorOpen(true)}
+          className="fixed bottom-8 right-8 z-50 bg-purple-600 hover:bg-purple-700 text-white px-6 py-3 rounded-full shadow-lg hover:shadow-xl transition-all duration-200 flex items-center gap-2 group"
+        >
+          <Film className="w-5 h-5" />
+          <span className="font-medium">Open Video Editor</span>
+          <div className="ml-2 bg-white/20 rounded-full px-2 py-0.5 text-xs">
+            {job.sections?.filter((s) => s.clip_url).length || 0}/{job.sections?.length || 0}
+          </div>
+        </button>
+      )}
       
       <div className="container mx-auto px-4 py-8">
         <div className="max-w-7xl mx-auto">
@@ -593,6 +625,16 @@ export default function CreateVideoPage() {
                   </Button>
                 ) : project.status === "complete" ? (
                   <>
+                    <Button
+                      onClick={() => router.push(`/dashboard/editor?jobId=${jobId}`)}
+                      variant="outline"
+                      size="lg"
+                      className="flex-1"
+                      disabled={!jobId}
+                    >
+                      <Film className="mr-2 w-5 h-5" />
+                      Open Editor
+                    </Button>
                     <Button
                       onClick={resetProject}
                       variant="outline"

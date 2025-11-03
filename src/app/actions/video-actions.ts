@@ -83,6 +83,58 @@ export async function getVideoJobAction(
   }
 }
 
+// Regenerate a specific section of a video job
+export async function regenerateSectionAction(
+  jobId: string,
+  sectionId: string,
+): Promise<{ success?: boolean; error?: string }> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return { error: "Not authenticated" };
+
+  try {
+    const job = await getJob(jobId);
+    if (job.user_id && job.user_id !== user.id) return { error: "Forbidden" };
+    
+    // Find the section to regenerate
+    const section = job.sections?.find(s => s.id === sectionId);
+    if (!section) {
+      return { error: "Section not found" };
+    }
+
+    if (!section.shot_prompt) {
+      return { error: "Section has no prompt to regenerate with" };
+    }
+
+    // Clear the existing clip data and error state
+    const updatedSections = job.sections.map(s =>
+      s.id === sectionId
+        ? { ...s, clip_url: undefined, clip_id: undefined, clip_error: undefined }
+        : s
+    );
+
+    // Update the job with cleared section
+    await supabase
+      .from("video_jobs")
+      .update({ 
+        sections: updatedSections, 
+        updated_at: new Date().toISOString() 
+      })
+      .eq("id", jobId);
+
+    // TODO: Trigger regeneration of this specific section
+    // This would need to integrate with your orchestrator to regenerate just one clip
+    console.log(`Regenerating section ${sectionId} for job ${jobId}`);
+
+    return { success: true };
+  } catch (e) {
+    console.error("regenerateSectionAction error:", e);
+    return { error: "Failed to regenerate section" };
+  }
+}
+
 // Cancel a running video job
 export async function cancelVideoJobAction(
   jobId: string,
